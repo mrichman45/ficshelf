@@ -202,8 +202,20 @@ async fn import_bytes(
     request: tauri::ipc::Request<'_>,
     state: State<'_, AppState>,
 ) -> Result<db::Book, String> {
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("expected the file's bytes".into());
+    // Desktop delivers the bytes raw. Some webviews, Android's among them,
+    // can deliver the same Uint8Array as JSON instead: either an array of
+    // numbers or an object keyed "0", "1", ... Accept all three.
+    let owned: Vec<u8>;
+    let bytes: &[u8] = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b,
+        tauri::ipc::InvokeBody::Json(json) => {
+            owned = bytes_from_json(json).ok_or_else(|| {
+                format!("the file arrived in an unexpected form ({})", json_kind(json))
+            })?;
+            &owned
+        }
+        #[allow(unreachable_patterns)]
+        _ => return Err("the file arrived in an unexpected form".into()),
     };
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err("that file is too large to import".into());
@@ -242,6 +254,34 @@ async fn import_bytes(
 
     let conn = state.conn.lock().map_err(err)?;
     import_one(&conn, &path).map_err(chain)
+}
+
+/// A byte array that came through IPC as JSON rather than raw.
+fn bytes_from_json(json: &serde_json::Value) -> Option<Vec<u8>> {
+    let byte = |v: &serde_json::Value| v.as_u64().filter(|n| *n < 256).map(|n| n as u8);
+    match json {
+        serde_json::Value::Array(items) => items.iter().map(byte).collect(),
+        serde_json::Value::Object(map) => {
+            let mut out = vec![0u8; map.len()];
+            for (k, v) in map {
+                let i: usize = k.parse().ok()?;
+                *out.get_mut(i)? = byte(v)?;
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn json_kind(json: &serde_json::Value) -> &'static str {
+    match json {
+        serde_json::Value::Null => "nothing",
+        serde_json::Value::Bool(_) => "a true/false value",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "text",
+        serde_json::Value::Array(_) => "a list that is not bytes",
+        serde_json::Value::Object(_) => "an object that is not bytes",
+    }
 }
 
 fn collect_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>, depth: usize) {
