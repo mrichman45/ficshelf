@@ -1,6 +1,6 @@
 [package]
 name = "ficshelf"
-version = "0.2.7"
+version = "0.2.8"
 description = "A local reading library for EPUB, PDF and CBZ, with an AO3 fetcher"
 edition = "2021"
 rust-version = "1.77"
