@@ -213,8 +213,20 @@ button:disabled { opacity: 0.5; cursor: default; border-color: var(--line); }
    flex layout around it is doing; epub.js measures this box. */
 #epub-area { position: absolute; inset: 0; overflow: hidden; }
 #epub-area .epub-container { margin: 0 auto; }
-#pdf-canvas { max-width: 100%; height: auto; margin: 14px auto; display: block; }
-#cbz-image { max-width: 100%; height: auto; margin: 0 auto; display: block; }
+/* :not([hidden]) so that showing these never overrides hiding them. */
+#pdf-canvas:not([hidden]) { max-width: 100%; height: auto; margin: 14px auto; display: block; }
+
+/* A comic page always fits the screen whole and sits in the middle, whatever
+   its shape: tall single pages fill the height, wide two-page spreads fill
+   the width. */
+#cbz-image:not([hidden]) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
 .reader-title { font-family: var(--serif); }
 
 /* ------------------------------------------------------------ results */
