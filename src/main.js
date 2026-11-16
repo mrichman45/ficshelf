@@ -64,6 +64,34 @@ function applyTheme() {
 applyTheme();
 darkQuery.addEventListener?.("change", applyTheme);
 
+// ----------------------------------------------------------------- motion
+
+function applyMotion() {
+  const choice = pref("motion", "system");
+  if (choice === "system") document.documentElement.removeAttribute("data-motion");
+  else document.documentElement.setAttribute("data-motion", choice);
+  document.querySelectorAll("[data-motion-choice]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.motionChoice === choice);
+    b.setAttribute("aria-checked", String(b.dataset.motionChoice === choice));
+  });
+}
+applyMotion();
+document.querySelectorAll("[data-motion-choice]").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("motion", b.dataset.motionChoice);
+    applyMotion();
+  }),
+);
+
+/// Slide `el` in from one side: +1 means the new page comes from the
+/// right (turning forward in a left-to-right book), -1 from the left.
+function playTurn(el, from) {
+  if (!el || !from) return;
+  el.classList.remove("turn-from-right", "turn-from-left");
+  void el.offsetWidth; // restart the animation even on a quick double turn
+  el.classList.add(from > 0 ? "turn-from-right" : "turn-from-left");
+}
+
 // Release builds on Android send nothing to the system log, so any error
 // that would otherwise vanish is shown on screen instead.
 window.addEventListener("error", (e) => toast(`Something went wrong: ${e.message}`, true));
@@ -1217,8 +1245,13 @@ async function openEpub(book) {
     }
   };
 
+  let pendingTurn = 0;
   rendition.on("relocated", (location) => {
     clearSelection();
+    if (pendingTurn) {
+      playTurn(area, pendingTurn);
+      pendingTurn = 0;
+    }
     here = location.start.cfi;
     saveWhere(book, here);
     showEpubPage();
@@ -1227,8 +1260,14 @@ async function openEpub(book) {
   state.reader = {
     book,
     kind: "epub",
-    next: () => rendition.next(),
-    prev: () => rendition.prev(),
+    next: () => {
+      pendingTurn = 1;
+      return rendition.next();
+    },
+    prev: () => {
+      pendingTurn = -1;
+      return rendition.prev();
+    },
     total: () => locTotal(),
     current: () => (here && locOf(here)) || 1,
     goTo: (n) => {
@@ -1346,13 +1385,13 @@ async function openPdf(book) {
     next: () => {
       if (page < doc.numPages) {
         page += 1;
-        render();
+        render().then(() => playTurn(canvas, 1));
       }
     },
     prev: () => {
       if (page > 1) {
         page -= 1;
-        render();
+        render().then(() => playTurn(canvas, -1));
       }
     },
     resize: () => render(),
@@ -1478,8 +1517,9 @@ async function openCbz(book, pages, rtlHint) {
     applyZoom(animate);
   };
 
-  // -- drawing
-  const render = async () => {
+  // -- drawing. `turn` is +1 or -1 for a page turn (it decides which side
+  // the new page slides in from), 0 for anything else.
+  const render = async (turn = 0) => {
     const gen = ++generation;
     const group = await groupAt(index);
     const srcs = await Promise.all(group.map(url));
@@ -1491,6 +1531,8 @@ async function openCbz(book, pages, rtlHint) {
     imgA.src = order[0];
     imgB.hidden = order.length < 2;
     imgB.src = order[1] || "";
+    // Forward in a right-to-left comic brings the next page from the left.
+    if (turn) playTurn(zoomLayer, rtl ? -turn : turn);
     const first = group[0] + 1;
     const last = group[group.length - 1] + 1;
     const label = first === last ? `${first} / ${pages.length}` : `${first}–${last} / ${pages.length}`;
@@ -1509,12 +1551,12 @@ async function openCbz(book, pages, rtlHint) {
     const after = shown[shown.length - 1] + 1;
     if (after >= pages.length) return;
     index = after;
-    await render();
+    await render(1);
   };
   const prev = async () => {
     if (index <= 0) return;
     index = await prevStart(index);
-    await render();
+    await render(-1);
   };
 
   // -- gestures: pinch, drag, double-tap, swipe and tap

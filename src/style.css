@@ -615,3 +615,63 @@ dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
 #font-margins { margin-bottom: 8px; }
 #font-margins button { flex: 1; }
 .sheet-label { margin: 6px 0 4px; }
+
+/* ------------------------------------------------------------ animation
+   Short and quiet, around 0.2 s. Settings → Appearance → Animations: System
+   follows the device's reduce-motion setting; Off removes them all. */
+
+:root { --ease: cubic-bezier(0.2, 0.7, 0.2, 1); }
+
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes sheet-scale { from { opacity: 0; transform: scale(0.96); } }
+@keyframes sheet-up { from { opacity: 0; transform: translateY(48px); } }
+@keyframes float-up {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes from-right { from { opacity: 0.25; transform: translateX(16%); } }
+@keyframes from-left { from { opacity: 0.25; transform: translateX(-16%); } }
+
+.view.active { animation: rise-in 0.18s var(--ease); }
+#view-reader.active { animation: fade-in 0.18s var(--ease); }
+
+.card { transition: transform 0.12s var(--ease), border-color 0.15s; }
+.card:active { transform: scale(0.97); }
+.card .cover { animation: fade-in 0.3s ease-out; }
+.hit { animation: rise-in 0.2s var(--ease) both; }
+
+dialog.sheet[open] { animation: sheet-scale 0.18s var(--ease); }
+dialog.sheet[open]::backdrop { animation: fade-in 0.18s ease-out; }
+@media (max-width: 720px) {
+  dialog.sheet[open] { animation-name: sheet-up; animation-duration: 0.22s; }
+}
+
+#toast:not([hidden]) { animation: float-up 0.2s var(--ease); }
+@media (max-width: 720px) {
+  #toast:not([hidden]) { animation: rise-in 0.2s var(--ease); }
+}
+#select-bar:not([hidden]) { animation: float-up 0.18s var(--ease); }
+#page-scrub:not([hidden]) { animation: rise-in 0.18s var(--ease); }
+
+/* Page turns: the new page arrives from the side being turned towards. */
+.turn-from-right { animation: from-right 0.22s var(--ease); }
+.turn-from-left { animation: from-left 0.22s var(--ease); }
+
+/* Off, or System with the device asking for less motion. */
+html[data-motion="off"] *,
+html[data-motion="off"] *::before,
+html[data-motion="off"] *::after,
+html[data-motion="off"] *::backdrop {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="on"]) *,
+  html:not([data-motion="on"]) *::before,
+  html:not([data-motion="on"]) *::after,
+  html:not([data-motion="on"]) *::backdrop {
+    animation: none !important;
+    transition: none !important;
+  }
+}
