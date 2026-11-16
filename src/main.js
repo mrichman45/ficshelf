@@ -1052,16 +1052,28 @@ async function openEpub(book) {
   $("#view-reader").classList.add("kind-epub");
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
-  // reading area's size; keep the book matched to it.
+  // reading area's size; keep the book matched to it. The watcher starts
+  // only once the first page is showing (see below): a ResizeObserver always
+  // reports once as it starts, and a resize in the middle of the first
+  // display clears the page before epub.js knows where to redraw it.
   let resizeTimer = null;
+  let lastSize = { width, height };
   const observer = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       const size = areaSize(area);
-      if (size.width > 0 && size.height > 0) rendition.resize(size.width, size.height);
+      if (!size.width || !size.height) return;
+      if (size.width === lastSize.width && size.height === lastSize.height) return;
+      lastSize = size;
+      const where = rendition.currentLocation()?.start?.cfi;
+      rendition.resize(size.width, size.height);
+      // epub.js redraws after a resize only if it already knew where it
+      // was; make sure the page never stays empty.
+      setTimeout(() => {
+        if (where && !area.querySelector("iframe")) rendition.display(where);
+      }, 300);
     }, 150);
   });
-  observer.observe(area);
 
   // A book that never finishes loading would otherwise leave a blank page
   // with no explanation.
@@ -1081,6 +1093,7 @@ async function openEpub(book) {
     $("#reader-progress").textContent = "";
   }
   console.info(`[epub] first page shown in ${since()}`);
+  observer.observe(area);
 
   // Page colours and fonts go on after the book is showing, so that if one
   // of them misbehaves the book is still readable.
