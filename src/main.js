@@ -600,6 +600,7 @@ function closeReader() {
   setVolumePaging(false);
   $("#view-reader").classList.remove("kind-epub");
   $("#select-bar").hidden = true;
+  $("#page-indicator").hidden = true;
   $("#view-reader").classList.remove("immersive");
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
@@ -1089,6 +1090,12 @@ async function openEpub(book) {
     .catch(() => {});
 }
 
+function showPageNumber(n, total) {
+  const el = $("#page-indicator");
+  el.textContent = `${n} / ${total}`;
+  el.hidden = false;
+}
+
 async function openPdf(book) {
   const canvas = $("#pdf-canvas");
   canvas.hidden = false;
@@ -1112,6 +1119,7 @@ async function openPdf(book) {
 
     await p.render({ canvasContext: ctx, viewport }).promise;
     $("#reader-progress").textContent = `${page} / ${doc.numPages}`;
+    showPageNumber(page, doc.numPages);
     saveWhere(book, page);
 
     // A PDF has no cover of its own, so the first page becomes one.
@@ -1165,6 +1173,7 @@ async function openCbz(book, pages) {
   const render = async () => {
     img.src = await invoke("cbz_page", { id: book.id, name: pages[index] });
     $("#reader-progress").textContent = `${index + 1} / ${pages.length}`;
+    showPageNumber(index + 1, pages.length);
     saveWhere(book, index);
   };
 
