@@ -120,6 +120,24 @@ installers as artefacts. Tagging a commit `v0.1.0` runs it automatically.
 Cross-compiling Windows binaries from Linux is possible but not worth the
 trouble here — the GitHub runner is simpler and gives you a clean machine.
 
+### Releases
+
+GitHub Actions builds every platform. To publish a new version:
+
+```fish
+./release.sh 0.2.0
+```
+
+That sets the version everywhere it lives, commits, tags `v0.2.0` and pushes.
+About fifteen minutes later the **Releases** page has the Windows installer,
+the three Linux files and the signed Android APK, under headings saying
+which is which. Versions must only go up: Android refuses to install an
+older version over a newer one.
+
+The Android APK is signed with the key in the repository secrets
+`ANDROID_KEYSTORE_B64` and `ANDROID_KEYSTORE_PASSWORD`. Keep a backup of that
+key: an APK signed with a different one cannot update the installed app.
+
 ---
 
 ## How the AO3 part behaves
