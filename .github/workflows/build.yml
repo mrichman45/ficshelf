@@ -43,7 +43,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             build-essential \
@@ -106,10 +105,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
+      # The runner image already carries the Android SDK at $ANDROID_HOME;
+      # only the pieces this build pins need adding.
       - name: Install the NDK and SDK platform
-        run: sdkmanager "ndk;${NDK_VERSION}" "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdk" --licenses > /dev/null || true
+          "$sdk" --install "ndk;${NDK_VERSION}" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
