@@ -984,6 +984,12 @@ async function openEpub(book) {
     // Fold's inner screen in landscape; one page on a phone.
     spread: width >= 800 ? "auto" : "none",
     minSpreadWidth: 800,
+    // Without this, epub.js sandboxes each page so strictly that recent
+    // Chromium (Android's webview included) runs none of its own layout or
+    // touch handling inside it, and the page comes out blank. The book's own
+    // scripts still cannot run: the app's Content-Security-Policy, which
+    // these pages inherit, only allows the app's own script files.
+    allowScriptedContent: true,
   });
 
   // Covers and other full-page images: fit the page, keep their shape, and
