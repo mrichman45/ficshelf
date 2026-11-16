@@ -19,6 +19,12 @@ side calls `FicShelfAndroid.pickFolder()`; this opens the picker, lists every
 EPUB, PDF and CBZ inside (subfolders included) and passes the list back to
 `window.__ficshelfFolderPicked`, which imports them one at a time.
 
+Open in another app: DRM-locked books stay in the library but can only be
+read by apps licensed for that DRM. `FicShelfAndroid.openExternally(path,
+mime)` offers the book to the phone's other reading apps. Android only lets
+an app share its private files through a FileProvider, so this also adds one
+(FicShelfFileProvider) to the manifest.
+
 Safe to run more than once.
 """
 
@@ -29,7 +35,10 @@ import sys
 MARK = "// FicShelf: volume-button page turning"
 
 IMPORTS = [
+    "android.content.Intent",
     "android.net.Uri",
+    "androidx.core.content.FileProvider",
+    "java.io.File",
     "android.provider.DocumentsContract",
     "android.view.KeyEvent",
     "android.webkit.JavascriptInterface",
@@ -53,6 +62,22 @@ MEMBERS = f"""
 
       @JavascriptInterface
       fun pickFolder() {{ runOnUiThread {{ ficshelfPickFolder.launch(null) }} }}
+
+      @JavascriptInterface
+      fun openExternally(path: String, mime: String): Boolean {{
+        return try {{
+          val uri = FileProvider.getUriForFile(
+            this@MainActivity, packageName + ".ficshelf.files", File(path))
+          val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+          val chooser = Intent.createChooser(view, "Open with")
+          runOnUiThread {{ startActivity(chooser) }}
+          true
+        }} catch (e: Exception) {{
+          false
+        }}
+      }}
     }}, "FicShelfAndroid")
   }}
 
@@ -151,7 +176,7 @@ def main() -> int:
     src = path.read_text()
     if MARK in src:
         print(f"{path} already patched")
-        return 0
+        return patch_file_provider(path)
 
     # Imports go after the package line.
     pkg = re.search(r"^package [\w.]+\s*$", src, re.M)
@@ -178,6 +203,56 @@ def main() -> int:
     path.write_text(src)
     print(f"patched {path}:\n")
     print(src)
+    return patch_file_provider(path)
+
+
+PROVIDER = """
+        <!-- FicShelf: share books with reading apps that can open DRM. -->
+        <provider
+            android:name=".FicShelfFileProvider"
+            android:authorities="${applicationId}.ficshelf.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/ficshelf_file_paths" />
+        </provider>
+"""
+
+PATHS_XML = """<?xml version="1.0" encoding="utf-8"?>
+<!-- The library lives in the app's private storage; this lets FicShelf hand
+     a single book to another app, with permission for that book only. -->
+<paths>
+    <root-path name="app" path="." />
+</paths>
+"""
+
+
+def patch_file_provider(activity: pathlib.Path) -> int:
+    # A subclass, so it cannot clash with any FileProvider a plugin declares.
+    pkg = re.search(r"^package ([\w.]+)", activity.read_text(), re.M).group(1)
+    sub = activity.with_name("FicShelfFileProvider.kt")
+    if not sub.exists():
+        sub.write_text(
+            f"package {pkg}\n\n"
+            "import androidx.core.content.FileProvider\n\n"
+            "class FicShelfFileProvider : FileProvider()\n"
+        )
+
+    main = next(p for p in activity.parents if p.name == "main")
+    manifest = main / "AndroidManifest.xml"
+    text = manifest.read_text()
+    if "FicShelfFileProvider" not in text:
+        if "</application>" not in text:
+            print("no </application> in AndroidManifest.xml", file=sys.stderr)
+            return 1
+        text = text.replace("</application>", PROVIDER + "    </application>", 1)
+        manifest.write_text(text)
+        print(f"added FicShelfFileProvider to {manifest}")
+
+    xml = main / "res" / "xml" / "ficshelf_file_paths.xml"
+    xml.parent.mkdir(parents=True, exist_ok=True)
+    xml.write_text(PATHS_XML)
     return 0
 
 

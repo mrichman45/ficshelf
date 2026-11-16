@@ -184,7 +184,13 @@ function bookCard(book, { showNumber = false } = {}) {
   fmt.textContent = book.format;
   card.appendChild(fmt);
 
-  if (book.has_update) {
+  if (book.drm) {
+    const badge = document.createElement("span");
+    badge.className = "badge lock";
+    badge.textContent = "🔒";
+    badge.title = `Locked with ${book.drm}`;
+    card.appendChild(badge);
+  } else if (book.has_update) {
     const badge = document.createElement("span");
     badge.className = "badge";
     badge.textContent = "new";
@@ -207,7 +213,8 @@ function bookCard(book, { showNumber = false } = {}) {
       pressedLong = false;
       return;
     }
-    openBook(book.id);
+    if (book.drm) openLocked(book);
+    else openBook(book.id);
   });
   if (IS_ANDROID) {
     onLongPress(card, () => {
@@ -265,6 +272,35 @@ function renderShelf() {
     return;
   }
   for (const [name, books] of all) shelf.appendChild(seriesCard(name, books));
+}
+
+// ----------------------------------------------------------- locked books
+//
+// FicShelf cannot open a DRM-locked book; only software licensed for that
+// DRM can. It keeps the book in the library and hands it to such an app.
+
+const MIME = { epub: "application/epub+zip", pdf: "application/pdf" };
+
+async function openLocked(book) {
+  if (IS_ANDROID) {
+    const ok = window.FicShelfAndroid?.openExternally?.(book.path, MIME[book.format] || "*/*");
+    if (!ok) {
+      toast(
+        `“${book.title}” is locked with ${book.drm}. Install a reader that supports it, such as PocketBook, then tap it again.`,
+        true,
+      );
+    }
+    return;
+  }
+  try {
+    await invoke("open_externally", { id: book.id });
+    toast(`Opening “${book.title}” in your default reader. It is locked with ${book.drm}, which FicShelf cannot open.`);
+  } catch (e) {
+    toast(
+      `“${book.title}” is locked with ${book.drm}. Install Adobe Digital Editions to read it. (${e})`,
+      true,
+    );
+  }
 }
 
 // ------------------------------------------------------ menu and editing
@@ -483,6 +519,14 @@ function withTimeout(promise, ms, message) {
 }
 
 function reportImport(report) {
+  const locked = report.added.filter((b) => b.drm);
+  if (locked.length && !report.failed.length) {
+    const what = locked.length === 1 ? `“${locked[0].title}” is` : `${locked.length} of them are`;
+    toast(
+      `${report.added.length} added. ${what} DRM-locked: tap to open in a reader app that supports it.`,
+    );
+    return;
+  }
   const bits = [`${report.added.length} added`];
   if (report.skipped.length) bits.push(`${report.skipped.length} skipped`);
   if (report.failed.length) bits.push(`${report.failed.length} failed`);

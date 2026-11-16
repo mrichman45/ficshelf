@@ -26,8 +26,10 @@ itself is never deleted). Your edits survive re-importing the file or
 re-downloading the work.
 
 **DRM** — books locked with Adobe or store DRM are recognised when added and
-refused with a clear message, since they can only be opened by software
-licensed for that DRM. FicShelf does not remove DRM.
+kept in the library with a 🔒. FicShelf cannot open them and does not remove
+DRM; tapping one hands it to software licensed for that DRM: the computer's
+default reader (Adobe Digital Editions, say) or, on Android, a choice of the
+phone's reading apps that support it.
 
 **Reader** — EPUB via epub.js with your place remembered as a CFI, PDF via
 pdf.js remembering the page, CBZ as a page-turner reading images straight out

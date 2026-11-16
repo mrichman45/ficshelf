@@ -183,6 +183,7 @@ button:disabled { opacity: 0.5; cursor: default; border-color: var(--line); }
   border-radius: 6px;
 }
 .badge.warn { background: var(--danger); color: #fff; }
+.badge.lock { background: var(--panel); border: 1px solid var(--line); }
 .fmt {
   position: absolute;
   top: 6px;

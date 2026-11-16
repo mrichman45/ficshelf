@@ -93,18 +93,10 @@ fn parent_name(path: &Path) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
-/// What to tell someone whose book is DRM-locked.
-fn drm_message(title: &str, kind: &str) -> String {
-    format!(
-        "\u{201c}{title}\u{201d} is locked with {kind}, so FicShelf can't open it. \
-         Read it in the store's own app, or in Adobe Digital Editions for Adobe DRM."
-    )
-}
-
 /// Import one file into the library, reading whatever metadata its format
 /// offers. Never copies or moves the file. `folder` names the folder it was
-/// added from, for grouping; DRM-locked books are refused with a clear
-/// message rather than added and then failing to open.
+/// added from, for grouping. A DRM-locked book is added and marked as such:
+/// FicShelf cannot open it, but lists it and hands it to an app that can.
 fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) -> Result<db::Book> {
     let format = format_of(path)
         .ok_or_else(|| anyhow::anyhow!("{} is not an EPUB, PDF or CBZ", path.display()))?;
@@ -119,18 +111,22 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
     let mut cover: Option<(Vec<u8>, String)> = None;
     let mut series: Option<String> = None;
     let mut series_index: Option<f64> = None;
+    let mut drm: Option<&'static str> = None;
 
     match format {
         "epub" => {
-            if let Ok(Some(kind)) = archive::epub_drm(path) {
-                anyhow::bail!(drm_message(&title, kind));
-            }
+            drm = archive::epub_drm(path).unwrap_or(None);
+            // A locked book's package file is usually readable, so its
+            // title and author still come through; its cover may be
+            // encrypted, so it is left out rather than shown as garbage.
             if let Ok(info) = archive::read_epub(path) {
                 if let Some(t) = info.title.filter(|t| !t.trim().is_empty()) {
                     title = t;
                 }
                 author = info.author;
-                cover = info.cover;
+                if drm.is_none() {
+                    cover = info.cover;
+                }
                 series = info.series;
                 series_index = info.series_index;
             }
@@ -149,9 +145,7 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
             }
         }
         _ => {
-            if let Ok(Some(kind)) = archive::pdf_drm(path) {
-                anyhow::bail!(drm_message(&title, kind));
-            }
+            drm = archive::pdf_drm(path).unwrap_or(None);
             // PDFs keep their file name here. The front end renders page one
             // and sends it back as a cover once the book is first opened,
             // which avoids shipping a PDF parser in the backend.
@@ -171,6 +165,7 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
         series: series.as_deref(),
         series_index,
         folder,
+        drm,
     };
     let id = db::upsert_book(conn, &new)?;
     db::get_book(conn, id)?.ok_or_else(|| anyhow::anyhow!("the book vanished after import"))
@@ -292,7 +287,7 @@ async fn import_bytes(
 
     let conn = state.conn.lock().map_err(err)?;
     import_one(&conn, &path, None).map_err(|e| {
-        // Our copy is no use if it could not be added (a DRM-locked book).
+        // Our copy is no use if it could not be added.
         std::fs::remove_file(&path).ok();
         chain(e)
     })
@@ -378,7 +373,7 @@ async fn import_uri(
     let conn = state.conn.lock().map_err(err)?;
     let folder = folder.filter(|f| !f.trim().is_empty());
     import_one(&conn, &path, folder.as_deref()).map_err(|e| {
-        // Our copy is no use if it could not be added (a DRM-locked book).
+        // Our copy is no use if it could not be added.
         std::fs::remove_file(&path).ok();
         chain(e)
     })
@@ -546,6 +541,25 @@ fn update_metadata(
     db::get_book(&conn, id)
         .map_err(chain)?
         .ok_or_else(|| "that book is not in the library".to_string())
+}
+
+/// Open a book in the computer's own default app for its file type. Used for
+/// DRM-locked books, which only software licensed for that DRM can open,
+/// such as Adobe Digital Editions. (On Android the front end asks the native
+/// side instead, which offers a choice of installed apps.)
+#[tauri::command]
+fn open_externally(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::get_book(&conn, id)
+            .map_err(chain)?
+            .ok_or_else(|| "that book is not in the library".to_string())?
+            .path
+    };
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| format!("no app on this computer would open it: {e}"))
 }
 
 #[tauri::command]
@@ -791,6 +805,7 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
         series: info.as_ref().and_then(|i| i.series.as_deref()),
         series_index: info.as_ref().and_then(|i| i.series_index),
         folder: None,
+        drm: None,
     };
     let id = db::upsert_book(&conn, &new).map_err(chain)?;
     db::clear_update(&conn, id, meta.chapters_posted as i64).map_err(chain)?;
@@ -945,6 +960,7 @@ pub fn run() {
             save_position,
             update_metadata,
             forget_book,
+            open_externally,
             ao3_search,
             ao3_browse_tag,
             ao3_save_work,

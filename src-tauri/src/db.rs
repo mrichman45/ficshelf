@@ -36,6 +36,9 @@ pub struct Book {
     /// True once the user has edited the details by hand; re-importing the
     /// file then leaves title, author and series alone.
     pub edited: bool,
+    /// The DRM a locked book carries ("Adobe DRM"), or None. Locked books
+    /// stay in the library but are opened in another app.
+    pub drm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +85,7 @@ fn add_columns(conn: &Connection) -> Result<()> {
         ("series_index", "REAL"),
         ("folder", "TEXT"),
         ("edited", "INTEGER NOT NULL DEFAULT 0"),
+        ("drm", "TEXT"),
     ] {
         if !existing.iter().any(|c| c == name) {
             conn.execute_batch(&format!("ALTER TABLE books ADD COLUMN {name} {decl};"))?;
@@ -174,6 +178,7 @@ pub struct NewBook<'a> {
     pub series: Option<&'a str>,
     pub series_index: Option<f64>,
     pub folder: Option<&'a str>,
+    pub drm: Option<&'a str>,
 }
 
 /// Insert a book, or update the existing row if this path is already known.
@@ -189,8 +194,8 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
     conn.execute(
         "INSERT INTO books(path, format, title, author, cover, cover_mime, added_at,
                            ao3_work_id, chapters_seen, chapters_total, complete, last_checked_at,
-                           series, series_index, folder)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                           series, series_index, folder, drm)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(path) DO UPDATE SET
             title          = CASE WHEN books.edited THEN books.title ELSE excluded.title END,
             author         = CASE WHEN books.edited THEN books.author ELSE excluded.author END,
@@ -199,6 +204,7 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
             series_index   = CASE WHEN books.edited THEN books.series_index
                                   ELSE COALESCE(excluded.series_index, books.series_index) END,
             folder         = COALESCE(excluded.folder, books.folder),
+            drm            = excluded.drm,
             cover          = COALESCE(excluded.cover, books.cover),
             cover_mime     = COALESCE(excluded.cover_mime, books.cover_mime),
             ao3_work_id    = COALESCE(excluded.ao3_work_id, books.ao3_work_id),
@@ -223,6 +229,7 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
             b.series,
             b.series_index,
             b.folder,
+            b.drm,
         ],
     )?;
 
@@ -237,7 +244,7 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
 const BOOK_COLUMNS: &str = "id, path, format, title, author, cover IS NOT NULL,
      added_at, last_opened_at, position, ao3_work_id, chapters_seen,
      chapters_total, complete, last_checked_at, has_update,
-     series, series_index, folder, edited";
+     series, series_index, folder, edited, drm";
 
 fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     let path: String = r.get(1)?;
@@ -263,6 +270,7 @@ fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         series_index: r.get(16)?,
         folder: r.get(17)?,
         edited: r.get::<_, i64>(18)? != 0,
+        drm: r.get(19)?,
     })
 }
 
