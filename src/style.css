@@ -574,3 +574,7 @@ dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
   border-left: 3px solid var(--danger);
   border-radius: var(--radius);
 }
+
+#font-margins { margin-bottom: 8px; }
+#font-margins button { flex: 1; }
+.sheet-label { margin: 6px 0 4px; }

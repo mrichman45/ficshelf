@@ -765,6 +765,33 @@ const FACES = {
   sans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
 };
 
+// "Even margins" (the default) removes a book's own side margins on the
+// body and on paragraphs, divisions and sections, so text sits evenly
+// inside FicShelf's page margin. Blockquotes keep their indent, and every
+// paragraph keeps its first-line indent. "Book's own" leaves the
+// publisher's layout alone.
+const EVEN_MARGINS_CSS = `
+  body { margin-left: 0 !important; margin-right: 0 !important; }
+  body p, body div, body section, body article {
+    margin-left: 0 !important; margin-right: 0 !important;
+    padding-left: 0 !important; padding-right: 0 !important;
+  }`;
+
+function applyMargins(contents) {
+  const doc = contents?.document;
+  if (!doc?.head) return;
+  const even = pref("margins", "even") === "even";
+  let style = doc.getElementById("ficshelf-margins");
+  if (even && !style) {
+    style = doc.createElement("style");
+    style.id = "ficshelf-margins";
+    style.textContent = EVEN_MARGINS_CSS;
+    doc.head.appendChild(style);
+  } else if (!even && style) {
+    style.remove();
+  }
+}
+
 function fontSize() {
   const n = Number(pref("fontSize", "100"));
   return FONT_SIZES.includes(n) ? n : 100;
@@ -774,6 +801,7 @@ function applyPageStyle(rendition) {
   rendition.themes.select(effectiveTheme());
   rendition.themes.fontSize(`${fontSize()}%`);
   rendition.themes.font(FACES[pref("fontFace", "book")] ?? "");
+  for (const c of rendition.getContents()) applyMargins(c);
 }
 
 // --------------------------------------------------- highlights and notes
@@ -926,7 +954,19 @@ function syncFontSheet() {
   document.querySelectorAll("#font-face button").forEach((b) =>
     b.classList.toggle("active", b.dataset.face === face),
   );
+  const margins = pref("margins", "even");
+  document.querySelectorAll("#font-margins button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.margins === margins),
+  );
 }
+
+document.querySelectorAll("#font-margins button").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("margins", b.dataset.margins);
+    syncFontSheet();
+    readerRestyle?.();
+  }),
+);
 
 function stepFont(dir) {
   const i = FONT_SIZES.indexOf(fontSize());
@@ -967,10 +1007,16 @@ document.querySelectorAll("dialog.sheet").forEach((d) =>
 /// rounded slightly differently on every page, and the error builds up: by
 /// the middle of a chapter the text sits visibly off to one side. An even
 /// width that is a whole number of device pixels keeps every page aligned.
+/// FicShelf's own margin each side of the page, in CSS pixels: a little on
+/// a phone, more where there is room.
+function pageInset(w) {
+  return w < 600 ? 16 : w < 1000 ? 28 : 40;
+}
+
 function areaSize(el) {
   const r = el.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  let width = Math.floor(r.width);
+  let width = Math.floor(r.width - 2 * pageInset(r.width));
   for (let w = width; w > width - 32 && w > 0; w--) {
     const device = w * dpr;
     if (w % 2 === 0 && Math.abs(device - Math.round(device)) < 0.001) {
@@ -1041,15 +1087,10 @@ async function openEpub(book) {
       display: "block",
       margin: "0 auto !important",
     },
-    // epub.js pads the page evenly on both sides; a book's own side margin
-    // on the body would push the text off-centre on top of that.
-    body: {
-      "margin-left": "0 !important",
-      "margin-right": "0 !important",
-    },
   });
 
   $("#view-reader").classList.add("kind-epub");
+  rendition.hooks.content.register((contents) => applyMargins(contents));
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
   // reading area's size; keep the book matched to it. The watcher starts
