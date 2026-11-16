@@ -243,17 +243,36 @@ button:disabled { opacity: 0.5; cursor: default; border-color: var(--line); }
 /* :not([hidden]) so that showing these never overrides hiding them. */
 #pdf-canvas:not([hidden]) { max-width: 100%; height: auto; margin: 14px auto; display: block; }
 
-/* A comic page always fits the screen whole and sits in the middle, whatever
-   its shape: tall single pages fill the height, wide two-page spreads fill
-   the width. */
-#cbz-image:not([hidden]) {
+/* Comics: one page, or two side by side, always fitting the screen whole
+   and centred. The inner layer is what zooms and pans; the view handles
+   every gesture itself (touch-action: none). */
+#cbz-view:not([hidden]) {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
+#cbz-zoom {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+#cbz-zoom.animate { transition: transform 0.18s ease-out; }
+#cbz-zoom .pg { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+#cbz-zoom .pg[hidden] { display: none; }
+#cbz-zoom.two .pg { max-width: 50%; }
+
+.cbz-only { display: none; }
+#view-reader.kind-cbz .cbz-only { display: inline-flex; }
+#reader-comic { min-width: 40px; justify-content: center; }
+#comic-dir button, #comic-layout button { flex: 1; }
+#comic-dir, #comic-layout { margin-bottom: 8px; }
 .reader-title { font-family: var(--serif); }
 
 /* ------------------------------------------------------------ results */
@@ -550,15 +569,33 @@ dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
   left: 50%;
   bottom: calc(10px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
+  min-height: 0;
   padding: 3px 12px;
+  border: none;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  pointer-events: none;
   z-index: 10;
 }
+#page-scrub:not([hidden]) {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(44px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 11;
+}
+#page-range { flex: 1; min-height: 0; padding: 0; accent-color: var(--accent); }
+#page-range-label { min-width: 9ch; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
 
 /* An error must show above the reading area, which covers the stage. */
 #reader-error:not([hidden]) {

@@ -113,6 +113,8 @@ pub struct ComicMeta {
     pub series: Option<String>,
     pub number: Option<f64>,
     pub writer: Option<String>,
+    /// ComicInfo's `<Manga>YesAndRightToLeft</Manga>`: read right to left.
+    pub right_to_left: bool,
 }
 
 pub fn parse_comicinfo(xml: &str) -> ComicMeta {
@@ -126,7 +128,10 @@ pub fn parse_comicinfo(xml: &str) -> ComicMeta {
         (Some(s), Some(n)) => Some(format!("{s} {}", format_index(n))),
         _ => None,
     });
-    ComicMeta { title, series, number, writer: field("Writer") }
+    let right_to_left = field("Manga")
+        .map(|m| m.eq_ignore_ascii_case("YesAndRightToLeft"))
+        .unwrap_or(false);
+    ComicMeta { title, series, number, writer: field("Writer"), right_to_left }
 }
 
 /// 2.0 as "2", 1.5 as "1.5".
@@ -651,6 +656,11 @@ mod tests {
         assert_eq!(c.title.as_deref(), Some("Ch. 2"));
         assert_eq!(c.number, Some(3.0));
         assert_eq!(parse_comicinfo("<ComicInfo/>"), ComicMeta::default());
+
+        // Manga direction: only YesAndRightToLeft means right to left.
+        assert!(parse_comicinfo("<ComicInfo><Manga>YesAndRightToLeft</Manga></ComicInfo>").right_to_left);
+        assert!(!parse_comicinfo("<ComicInfo><Manga>Yes</Manga></ComicInfo>").right_to_left);
+        assert!(!parse_comicinfo("<ComicInfo><Manga>No</Manga></ComicInfo>").right_to_left);
     }
 
     #[test]

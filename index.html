@@ -54,18 +54,29 @@
           <span id="reader-progress" class="muted"></span>
           <button id="reader-notes" class="epub-only" title="Highlights and notes">✎</button>
           <button id="reader-aa" class="epub-only" title="Text size and font">Aa</button>
+          <button id="reader-comic" class="cbz-only" title="Reading direction and layout">⚙</button>
           <button id="reader-prev">Previous</button>
           <button id="reader-next">Next</button>
         </header>
         <div id="reader-stage" class="stage">
           <div id="epub-area" hidden></div>
           <canvas id="pdf-canvas" hidden></canvas>
-          <img id="cbz-image" hidden alt="" />
+          <!-- Comics: one or two pages, inside a layer that zooms and pans. -->
+          <div id="cbz-view" hidden>
+            <div id="cbz-zoom">
+              <img class="pg" alt="" />
+              <img class="pg" alt="" hidden />
+            </div>
+          </div>
           <p id="reader-error" class="error" hidden></p>
         </div>
         <!-- Page number for PDFs and comics, kept visible when the toolbar
              is hidden. -->
-        <div id="page-indicator" hidden></div>
+        <button id="page-indicator" hidden title="Go to a page"></button>
+        <div id="page-scrub" hidden>
+          <input id="page-range" type="range" min="1" max="1" step="1" />
+          <span id="page-range-label"></span>
+        </div>
         <!-- Shown while text is selected in an EPUB. -->
         <div id="select-bar" hidden>
           <button class="swatch" data-color="yellow" title="Highlight yellow"></button>
@@ -292,6 +303,26 @@
       </div>
       <p class="muted small">Light, Dark and Sepia are under Settings → Appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="comic-sheet" class="sheet">
+      <h3>Comic</h3>
+      <p class="muted small sheet-label">Reading direction (this comic)</p>
+      <div class="tabs" role="radiogroup" id="comic-dir">
+        <button data-dir="ltr" role="radio">Left to right</button>
+        <button data-dir="rtl" role="radio">Right to left (manga)</button>
+      </div>
+      <p class="muted small sheet-label">Pages (all comics)</p>
+      <div class="tabs" role="radiogroup" id="comic-layout">
+        <button data-layout="auto" role="radio">Auto</button>
+        <button data-layout="single" role="radio">Single</button>
+        <button data-layout="double" role="radio">Two pages</button>
+      </div>
+      <p class="muted small">
+        Auto shows two pages side by side when the screen is wider than it is
+        tall. Pinch or double-tap the middle of a page to zoom.
+      </p>
+      <div class="row"><button id="comic-done" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="notes-sheet" class="sheet">

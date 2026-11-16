@@ -605,7 +605,9 @@ function closeReader() {
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
   $("#pdf-canvas").hidden = true;
-  $("#cbz-image").hidden = true;
+  $("#cbz-view").hidden = true;
+  $("#view-reader").classList.remove("kind-cbz");
+  $("#page-scrub").hidden = true;
   $("#reader-error").hidden = true;
 }
 
@@ -654,13 +656,15 @@ $("#reader-prev").addEventListener("click", () => state.reader?.prev?.());
 
 document.addEventListener("keydown", (e) => {
   if (!state.reader) return;
-  if (e.key === "ArrowRight" || e.key === "PageDown") state.reader.next?.();
-  if (e.key === "ArrowLeft" || e.key === "PageUp") state.reader.prev?.();
+  // In a right-to-left comic, the left arrow goes forward.
+  const rtl = Boolean(state.reader.rtl);
+  if (e.key === "PageDown" || e.key === (rtl ? "ArrowLeft" : "ArrowRight")) state.reader.next?.();
+  if (e.key === "PageUp" || e.key === (rtl ? "ArrowRight" : "ArrowLeft")) state.reader.prev?.();
   if (e.key === "Escape") leaveReader();
 });
 
 async function openBook(id) {
-  const { book, pages } = await call("open_book", { id });
+  const { book, pages, right_to_left: rtlHint } = await call("open_book", { id });
   if (book.missing) {
     toast(`That file is no longer at ${book.path}`, true);
     return;
@@ -676,7 +680,7 @@ async function openBook(id) {
   try {
     if (book.format === "epub") await openEpub(book);
     else if (book.format === "pdf") await openPdf(book);
-    else await openCbz(book, pages);
+    else await openCbz(book, pages, rtlHint);
   } catch (e) {
     $("#reader-error").hidden = false;
     $("#reader-error").textContent = `Could not open this file: ${e}`;
@@ -722,7 +726,9 @@ function touchTurner(pageX) {
 const stageTouch = touchTurner((t) => t.clientX / window.innerWidth);
 $("#reader-stage").addEventListener("touchstart", (e) => stageTouch.start(e), { passive: true });
 $("#reader-stage").addEventListener("touchend", (e) => {
-  if (state.reader && state.reader.kind !== "epub") stageTouch.end(e);
+  // EPUBs get touches through epub.js, comics through their own gesture
+  // handling; this is for PDFs.
+  if (state.reader && state.reader.kind === "pdf") stageTouch.end(e);
 });
 
 // Unfolding the Fold, or rotating a phone, changes the page size.
@@ -1187,12 +1193,35 @@ async function openEpub(book) {
     $("#select-bar").hidden = false;
   });
 
+  // Page numbers. An EPUB has no fixed pages: its text reflows to fit the
+  // screen and the font size. epub.js "locations" divide the book into
+  // page-sized pieces once, so page 123 stays page 123 whatever the text
+  // size. Until they are ready the readout is a percentage.
+  let here = null;
+  const locTotal = () => epub.locations?.length?.() || 0;
+  const locOf = (cfi) => {
+    const n = epub.locations?.locationFromCfi?.(cfi);
+    return typeof n === "number" && n >= 0 ? n + 1 : null;
+  };
+  const showEpubPage = () => {
+    if (!here) return;
+    const total = locTotal();
+    const n = total ? locOf(here) : null;
+    if (n) {
+      showPageNumber(Math.min(n, total), total);
+      $("#reader-progress").textContent = `${Math.round((n / total) * 100)}%`;
+    } else {
+      const pct = epub.locations?.percentageFromCfi?.(here);
+      $("#reader-progress").textContent =
+        typeof pct === "number" && !Number.isNaN(pct) ? `${Math.round(pct * 100)}%` : "";
+    }
+  };
+
   rendition.on("relocated", (location) => {
     clearSelection();
-    saveWhere(book, location.start.cfi);
-    const pct = epub.locations?.percentageFromCfi?.(location.start.cfi);
-    $("#reader-progress").textContent =
-      typeof pct === "number" && !Number.isNaN(pct) ? `${Math.round(pct * 100)}%` : "";
+    here = location.start.cfi;
+    saveWhere(book, here);
+    showEpubPage();
   });
 
   state.reader = {
@@ -1200,6 +1229,12 @@ async function openEpub(book) {
     kind: "epub",
     next: () => rendition.next(),
     prev: () => rendition.prev(),
+    total: () => locTotal(),
+    current: () => (here && locOf(here)) || 1,
+    goTo: (n) => {
+      const cfi = epub.locations?.cfiFromLocation?.(Math.max(0, Math.round(n) - 1));
+      if (cfi) rendition.display(cfi);
+    },
     // The ResizeObserver above already follows every size change.
     resize: () => {},
     cleanup: () => {
@@ -1216,18 +1251,47 @@ async function openEpub(book) {
     },
   };
 
-  // Locations make the percentage readout meaningful but cost a pass over the
-  // whole book, so they are generated in the background and never awaited.
+  // Locations cost a pass over the whole book, so they are generated in the
+  // background and never awaited; page numbers appear when they are ready.
   epub.ready
     .then(() => epub.locations.generate(1600))
+    .then(() => {
+      if (state.reader?.book?.id === book.id) showEpubPage();
+    })
     .catch(() => {});
 }
 
-function showPageNumber(n, total) {
+/// The page pill at the bottom. `label` overrides the plain "n / total",
+/// for a two-page spread ("12–13 / 689").
+function showPageNumber(n, total, label) {
   const el = $("#page-indicator");
-  el.textContent = `${n} / ${total}`;
+  el.textContent = label || `${n} / ${total}`;
   el.hidden = false;
+  if (!$("#page-scrub").hidden) syncScrub(n, total);
 }
+
+function syncScrub(n, total) {
+  const range = $("#page-range");
+  range.max = String(total);
+  range.value = String(n);
+  $("#page-range-label").textContent = `${n} / ${total}`;
+}
+
+// Tap the page number for a slider; let go to jump there.
+$("#page-indicator").addEventListener("click", () => {
+  const r = state.reader;
+  if (!r?.goTo || !r.total?.()) return;
+  const scrub = $("#page-scrub");
+  scrub.hidden = !scrub.hidden;
+  if (!scrub.hidden) syncScrub(r.current(), r.total());
+});
+$("#page-range").addEventListener("input", (e) => {
+  $("#page-range-label").textContent = `${e.target.value} / ${e.target.max}`;
+});
+$("#page-range").addEventListener("change", (e) => {
+  state.reader?.goTo?.(Number(e.target.value));
+  $("#page-scrub").hidden = true;
+});
 
 async function openPdf(book) {
   const canvas = $("#pdf-canvas");
@@ -1292,46 +1356,389 @@ async function openPdf(book) {
       }
     },
     resize: () => render(),
+    total: () => doc.numPages,
+    current: () => page,
+    goTo: (n) => {
+      page = Math.min(Math.max(Math.round(n), 1), doc.numPages);
+      render();
+    },
     cleanup: () => doc.destroy(),
   };
 }
 
-async function openCbz(book, pages) {
+// ----------------------------------------------------------------- comics
+//
+// One page, or two side by side when the screen is wide; right to left for
+// manga; pinch, double-tap and drag to zoom and pan. Pages are fetched ahead
+// so turning is instant.
+
+const COMIC_LAYOUTS = ["auto", "single", "double"];
+
+function comicDirection(book, hint) {
+  return pref(`dir.${book.id}`, hint ? "rtl" : "ltr");
+}
+
+async function openCbz(book, pages, rtlHint) {
   if (!pages.length) throw new Error("no images in this archive");
-  const img = $("#cbz-image");
-  img.hidden = false;
+  const view = $("#cbz-view");
+  const zoomLayer = $("#cbz-zoom");
+  const [imgA, imgB] = zoomLayer.querySelectorAll(".pg");
+  view.hidden = false;
+  $("#view-reader").classList.add("kind-cbz");
 
   let index = Math.min(Math.max(parseInt(book.position || "0", 10) || 0, 0), pages.length - 1);
+  let shown = [index];
+  let rtl = comicDirection(book, rtlHint) === "rtl";
+  let generation = 0;
 
-  const render = async () => {
-    img.src = await invoke("cbz_page", { id: book.id, name: pages[index] });
-    $("#reader-progress").textContent = `${index + 1} / ${pages.length}`;
-    showPageNumber(index + 1, pages.length);
-    saveWhere(book, index);
+  // -- fetching, with a small cache around the current page
+  const urls = new Map();
+  const dims = new Map();
+  const url = (i) => {
+    if (!urls.has(i)) {
+      const p = invoke("cbz_page", { id: book.id, name: pages[i] });
+      p.catch(() => urls.delete(i));
+      urls.set(i, p);
+    }
+    return urls.get(i);
   };
+  const trim = () => {
+    for (const i of [...urls.keys()]) if (i < index - 6 || i > index + 10) urls.delete(i);
+  };
+  const dimsOf = async (i) => {
+    if (dims.has(i)) return dims.get(i);
+    const src = await url(i);
+    const d = await new Promise((res) => {
+      const im = new Image();
+      im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight });
+      im.onerror = () => res({ w: 2, h: 3 });
+      im.src = src;
+    });
+    dims.set(i, d);
+    return d;
+  };
+  // A page that is already a two-page spread is shown on its own.
+  const isWide = (d) => d.w > d.h * 1.1;
+
+  const twoUp = () => {
+    const mode = pref("comicLayout", "auto");
+    if (mode === "single") return false;
+    if (mode === "double") return true;
+    const r = view.getBoundingClientRect();
+    return r.width > r.height * 1.05;
+  };
+
+  // The pages shown when `i` is the first: the cover and wide pages alone,
+  // otherwise a pair.
+  const groupAt = async (i) => {
+    if (!twoUp() || i === 0 || i >= pages.length - 1) return [i];
+    if (isWide(await dimsOf(i)) || isWide(await dimsOf(i + 1))) return [i];
+    return [i, i + 1];
+  };
+  const prevStart = async (i) => {
+    if (i <= 0) return 0;
+    if (!twoUp()) return i - 1;
+    const j = i - 1;
+    if (j === 0 || isWide(await dimsOf(j))) return j;
+    if (j - 1 >= 1 && !isWide(await dimsOf(j - 1))) return j - 1;
+    return j;
+  };
+
+  // -- zoom and pan
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+  const applyZoom = (animate = false) => {
+    zoomLayer.classList.toggle("animate", animate);
+    zoomLayer.style.transform = scale === 1 ? "" : `translate(${tx}px, ${ty}px) scale(${scale})`;
+  };
+  const clampPan = () => {
+    const r = view.getBoundingClientRect();
+    tx = Math.min(0, Math.max(r.width - r.width * scale, tx));
+    ty = Math.min(0, Math.max(r.height - r.height * scale, ty));
+  };
+  const resetZoom = (animate = false) => {
+    scale = 1;
+    tx = 0;
+    ty = 0;
+    applyZoom(animate);
+  };
+  const zoomAt = (px, py, s, animate = true) => {
+    const r = view.getBoundingClientRect();
+    const x = px - r.left;
+    const y = py - r.top;
+    // Keep the point under the finger where it is.
+    const cx = (x - tx) / scale;
+    const cy = (y - ty) / scale;
+    scale = s;
+    tx = x - cx * scale;
+    ty = y - cy * scale;
+    if (scale <= 1.01) return resetZoom(animate);
+    clampPan();
+    applyZoom(animate);
+  };
+
+  // -- drawing
+  const render = async () => {
+    const gen = ++generation;
+    const group = await groupAt(index);
+    const srcs = await Promise.all(group.map(url));
+    if (gen !== generation) return; // a newer turn overtook this one
+    shown = group;
+    const order = rtl ? [...srcs].reverse() : srcs;
+    resetZoom();
+    zoomLayer.classList.toggle("two", order.length === 2);
+    imgA.src = order[0];
+    imgB.hidden = order.length < 2;
+    imgB.src = order[1] || "";
+    const first = group[0] + 1;
+    const last = group[group.length - 1] + 1;
+    const label = first === last ? `${first} / ${pages.length}` : `${first}–${last} / ${pages.length}`;
+    $("#reader-progress").textContent = label;
+    showPageNumber(first, pages.length, label);
+    saveWhere(book, index);
+    trim();
+    for (let k = 1; k <= 4; k++) {
+      const n = last - 1 + k;
+      if (n < pages.length) url(n).catch(() => {});
+    }
+    if (index > 0) url(index - 1).catch(() => {});
+  };
+
+  const next = async () => {
+    const after = shown[shown.length - 1] + 1;
+    if (after >= pages.length) return;
+    index = after;
+    await render();
+  };
+  const prev = async () => {
+    if (index <= 0) return;
+    index = await prevStart(index);
+    await render();
+  };
+
+  // -- gestures: pinch, drag, double-tap, swipe and tap
+  const pointers = new Map();
+  let pinch = null;
+  let gesture = null;
+  let lastTap = null;
+  let tapTimer = null;
+  let lastTouchAt = 0;
+
+  const onDown = (e) => {
+    if (e.pointerType === "touch") lastTouchAt = Date.now();
+    view.setPointerCapture?.(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        scale,
+        cx: (a.x + b.x) / 2,
+        cy: (a.y + b.y) / 2,
+        tx,
+        ty,
+      };
+      gesture = null;
+    } else if (pointers.size === 1) {
+      gesture = { x: e.clientX, y: e.clientY, at: Date.now(), lx: e.clientX, ly: e.clientY, moved: false };
+    }
+  };
+
+  const onMove = (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && pointers.size >= 2) {
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const s = Math.min(5, Math.max(1, (pinch.scale * dist) / (pinch.dist || 1)));
+      const r = view.getBoundingClientRect();
+      const cx = (pinch.cx - r.left - pinch.tx) / pinch.scale;
+      const cy = (pinch.cy - r.top - pinch.ty) / pinch.scale;
+      const mx = (a.x + b.x) / 2 - r.left;
+      const my = (a.y + b.y) / 2 - r.top;
+      scale = s;
+      tx = mx - cx * scale;
+      ty = my - cy * scale;
+      clampPan();
+      applyZoom();
+      return;
+    }
+    if (gesture) {
+      if (Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > 10) gesture.moved = true;
+      if (scale > 1) {
+        tx += e.clientX - gesture.lx;
+        ty += e.clientY - gesture.ly;
+        clampPan();
+        applyZoom();
+      }
+      gesture.lx = e.clientX;
+      gesture.ly = e.clientY;
+    }
+  };
+
+  const onUp = (e) => {
+    pointers.delete(e.pointerId);
+    if (pinch) {
+      if (pointers.size < 2) {
+        pinch = null;
+        if (scale < 1.05) resetZoom(true);
+      }
+      gesture = null;
+      return;
+    }
+    const g = gesture;
+    gesture = null;
+    if (!g || pointers.size) return;
+
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    const quick = Date.now() - g.at < 350;
+    const r = view.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width;
+
+    // A swipe turns the page, but only when not zoomed in.
+    if (scale === 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      const forward = rtl ? dx > 0 : dx < 0;
+      forward ? next() : prev();
+      return;
+    }
+    if (!quick || g.moved) return;
+
+    // Double-tap zooms in on that spot, or back out.
+    if (lastTap && Date.now() - lastTap.at < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+      clearTimeout(tapTimer);
+      lastTap = null;
+      if (scale > 1) resetZoom(true);
+      else zoomAt(e.clientX, e.clientY, 2.5);
+      return;
+    }
+
+    // Edge taps turn at once; a middle tap waits a moment in case it is the
+    // first of a double-tap, then shows or hides the toolbar.
+    if (scale === 1 && (fx < 0.3 || fx > 0.7)) {
+      const forward = rtl ? fx < 0.3 : fx > 0.7;
+      forward ? next() : prev();
+      lastTap = null;
+      return;
+    }
+    lastTap = { at: Date.now(), x: e.clientX, y: e.clientY };
+    clearTimeout(tapTimer);
+    tapTimer = setTimeout(() => {
+      lastTap = null;
+      $("#view-reader").classList.toggle("immersive");
+    }, 300);
+  };
+
+  view.addEventListener("pointerdown", onDown);
+  view.addEventListener("pointermove", onMove);
+  view.addEventListener("pointerup", onUp);
+  view.addEventListener("pointercancel", onUp);
+  // Desktop: double-click to zoom, ctrl+wheel to zoom smoothly.
+  const onDblClick = (e) => {
+    // Android can report a double-tap as a double-click too; the touch
+    // handling above has already dealt with it.
+    if (Date.now() - lastTouchAt < 1000) return;
+    if (scale > 1) resetZoom(true);
+    else zoomAt(e.clientX, e.clientY, 2.5);
+  };
+  const onWheel = (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, Math.min(5, Math.max(1, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15))), false);
+  };
+  view.addEventListener("dblclick", onDblClick);
+  view.addEventListener("wheel", onWheel, { passive: false });
+
+  // Turning the phone or unfolding the Fold can switch between one and two
+  // pages.
+  let wasTwo = twoUp();
+  let resizeTimer = null;
+  const observer = new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resetZoom();
+      if (twoUp() !== wasTwo) {
+        wasTwo = twoUp();
+        render();
+      }
+    }, 150);
+  });
+  observer.observe(view);
 
   await render();
 
   state.reader = {
     book,
     kind: "cbz",
-    next: () => {
-      if (index < pages.length - 1) {
-        index += 1;
-        render();
-      }
+    get rtl() {
+      return rtl;
     },
-    prev: () => {
-      if (index > 0) {
-        index -= 1;
-        render();
-      }
+    next,
+    prev,
+    total: () => pages.length,
+    current: () => index + 1,
+    goTo: (n) => {
+      index = Math.min(Math.max(Math.round(n) - 1, 0), pages.length - 1);
+      render();
+    },
+    setDirection: (dir) => {
+      rtl = dir === "rtl";
+      setPref(`dir.${book.id}`, dir);
+      render();
+    },
+    relayout: () => {
+      wasTwo = twoUp();
+      render();
     },
     cleanup: () => {
-      img.src = "";
+      generation++;
+      observer.disconnect();
+      clearTimeout(resizeTimer);
+      clearTimeout(tapTimer);
+      view.removeEventListener("pointerdown", onDown);
+      view.removeEventListener("pointermove", onMove);
+      view.removeEventListener("pointerup", onUp);
+      view.removeEventListener("pointercancel", onUp);
+      view.removeEventListener("dblclick", onDblClick);
+      view.removeEventListener("wheel", onWheel);
+      resetZoom();
+      imgA.src = "";
+      imgB.src = "";
+      urls.clear();
     },
   };
 }
+
+// The comic settings sheet.
+function syncComicSheet() {
+  const r = state.reader;
+  const dir = r?.rtl ? "rtl" : "ltr";
+  document.querySelectorAll("#comic-dir button").forEach((b) => b.classList.toggle("active", b.dataset.dir === dir));
+  const layout = pref("comicLayout", "auto");
+  document.querySelectorAll("#comic-layout button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.layout === layout),
+  );
+}
+$("#reader-comic").addEventListener("click", () => {
+  syncComicSheet();
+  $("#comic-sheet").showModal();
+});
+document.querySelectorAll("#comic-dir button").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.reader?.setDirection?.(b.dataset.dir);
+    syncComicSheet();
+  }),
+);
+document.querySelectorAll("#comic-layout button").forEach((b) =>
+  b.addEventListener("click", () => {
+    if (!COMIC_LAYOUTS.includes(b.dataset.layout)) return;
+    setPref("comicLayout", b.dataset.layout);
+    syncComicSheet();
+    state.reader?.relayout?.();
+  }),
+);
+$("#comic-done").addEventListener("click", () => $("#comic-sheet").close());
 
 // ------------------------------------------------------------ AO3 search
 

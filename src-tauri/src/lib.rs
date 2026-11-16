@@ -56,6 +56,8 @@ pub struct OpenedBook {
     pub book: db::Book,
     /// For CBZ files: the page entries, in reading order.
     pub pages: Vec<String>,
+    /// For CBZ files: whether ComicInfo marks it as manga read right to left.
+    pub right_to_left: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,12 +460,18 @@ fn open_book(
             .map_err(err)?;
     }
 
-    let pages = if book.format == "cbz" {
-        archive::cbz_pages(Path::new(&book.path)).map_err(chain)?
+    let (pages, right_to_left) = if book.format == "cbz" {
+        let p = Path::new(&book.path);
+        let rtl = archive::cbz_info(p)
+            .ok()
+            .flatten()
+            .map(|i| i.right_to_left)
+            .unwrap_or(false);
+        (archive::cbz_pages(p).map_err(chain)?, rtl)
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
-    Ok(OpenedBook { book, pages })
+    Ok(OpenedBook { book, pages, right_to_left })
 }
 
 /// A whole EPUB's bytes, for the reader. Sent as a raw binary response
