@@ -1000,9 +1000,6 @@ async function openEpub(book) {
     },
   });
 
-  registerPageThemes(rendition);
-  applyPageStyle(rendition);
-  readerRestyle = () => applyPageStyle(rendition);
   $("#view-reader").classList.add("kind-epub");
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
@@ -1017,7 +1014,34 @@ async function openEpub(book) {
   });
   observer.observe(area);
 
-  await rendition.display(book.position || undefined);
+  // A book that never finishes loading would otherwise leave a blank page
+  // with no explanation.
+  await withTimeout(
+    rendition.display(book.position || undefined).catch(async (e) => {
+      // A saved position from an older copy of the file can fail to resolve;
+      // fall back to the start rather than not opening at all.
+      if (book.position) return rendition.display();
+      throw e;
+    }),
+    20_000,
+    "the book did not finish loading",
+  );
+
+  // Page colours and fonts go on after the book is showing, so that if one
+  // of them misbehaves the book is still readable.
+  try {
+    registerPageThemes(rendition);
+    applyPageStyle(rendition);
+    readerRestyle = () => {
+      try {
+        applyPageStyle(rendition);
+      } catch (e) {
+        toast(`Could not apply that style: ${e?.message || e}`, true);
+      }
+    };
+  } catch (e) {
+    toast(`The book opened, but its colours and font could not be set: ${e?.message || e}`, true);
+  }
 
   // The book lives in an iframe, so its touches arrive through epub.js
   // rather than the page. screenX is used because the iframe's own

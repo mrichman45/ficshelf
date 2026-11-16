@@ -56,6 +56,10 @@ MEMBERS = f"""
   override fun onWebViewCreate(webView: WebView) {{
     super.onWebViewCreate(webView)
     ficshelfWebView = webView
+    // Lets chrome://inspect on a computer connected by USB show the app's
+    // console. It only works with USB debugging switched on in the phone's
+    // developer options, so it opens nothing to anyone else.
+    WebView.setWebContentsDebuggingEnabled(true)
     webView.addJavascriptInterface(object {{
       @JavascriptInterface
       fun setVolumePaging(on: Boolean) {{ ficshelfVolumePaging = on }}

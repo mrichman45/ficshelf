@@ -555,3 +555,18 @@ dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
   pointer-events: none;
   z-index: 10;
 }
+
+/* An error must show above the reading area, which covers the stage. */
+#reader-error:not([hidden]) {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  z-index: 15;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+}
