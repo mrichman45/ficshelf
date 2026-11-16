@@ -336,6 +336,8 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 /* ------------------------------------------------------- phones, touch */
 
 .android .desktop-only { display: none !important; }
+html:not(.android) .android-only { display: none !important; }
+.setting label.check { display: inline-flex; color: var(--ink); font-size: inherit; }
 
 /* Tap the middle of a page to hide the toolbar while reading. */
 #view-reader.immersive .bar { display: none; }

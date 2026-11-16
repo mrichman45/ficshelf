@@ -86,6 +86,7 @@ fish_add_path $ANDROID_HOME/platform-tools
 rustup target add aarch64-linux-android
 npm install
 npm run tauri android init      # once; creates src-tauri/gen/android
+python3 scripts/patch-android.py   # adds volume-button page turning
 ```
 
 Build an APK, then install it on a phone connected over USB:
@@ -107,8 +108,9 @@ What is different on a phone:
   use, so you sign in once per launch and nothing is kept.
 - **Add files… copies** the chosen files into the app's own storage, because
   Android only lends the app the original. There is no Add folder.
-- **Swipe or tap the edges to turn pages**; tap the middle to hide the
-  toolbar. Long-press a cover to remove it. The back button leaves the
+- **Swipe or tap the edges to turn pages**, or use the volume buttons
+  (down for next, up for previous; switch off under Settings). Tap the
+  middle to hide the toolbar. Long-press a cover to remove it. The back button leaves the
   reader.
 
 ### Both at once, without a Windows machine

@@ -290,6 +290,7 @@ function closeReader() {
     }
   }
   state.reader = null;
+  setVolumePaging(false);
   $("#view-reader").classList.remove("immersive");
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
@@ -297,6 +298,35 @@ function closeReader() {
   $("#cbz-image").hidden = true;
   $("#reader-error").hidden = true;
 }
+
+// ------------------------------------------------------- volume buttons
+//
+// On Android the native side catches the volume buttons while a book is
+// open and calls this; everywhere else they change the volume as usual.
+// Volume down is the next page, volume up the previous one.
+
+const VOLUME_PAGING_KEY = "ficshelf.volumePaging";
+
+function volumePagingWanted() {
+  try {
+    return localStorage.getItem(VOLUME_PAGING_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function setVolumePaging(on) {
+  try {
+    window.FicShelfAndroid?.setVolumePaging(Boolean(on && volumePagingWanted()));
+  } catch {
+    /* not on Android, or an older build without the native half */
+  }
+}
+
+window.__ficshelfPage = (dir) => {
+  if (dir === "next") state.reader?.next?.();
+  else state.reader?.prev?.();
+};
 
 // The Android back button walks the webview's history, so opening a book
 // pushes an entry and going back closes the reader instead of the app.
@@ -328,6 +358,7 @@ async function openBook(id) {
 
   closeReader();
   show("reader");
+  setVolumePaging(true);
   if (!history.state?.reader) history.pushState({ reader: true }, "");
   $("#reader-title").textContent = book.title;
   $("#reader-progress").textContent = "";
@@ -1154,6 +1185,15 @@ $("#btn-change-dir").addEventListener("click", async () => {
   await call("set_library_dir", { path: dir });
   await refreshSettings();
   toast("Downloads folder changed.");
+});
+
+$("#volume-paging").checked = volumePagingWanted();
+$("#volume-paging").addEventListener("change", (e) => {
+  try {
+    localStorage.setItem(VOLUME_PAGING_KEY, e.target.checked ? "on" : "off");
+  } catch {
+    /* storage unavailable; the choice lasts until the app closes */
+  }
 });
 
 async function refreshSettings() {

@@ -132,6 +132,7 @@ jobs:
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           npm run tauri android init -- --ci
+          python3 scripts/patch-android.py
           npm run tauri android build -- --apk --target aarch64 --ci
 
       # Every build is signed with the same key, kept as repository secrets,
