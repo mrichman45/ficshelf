@@ -186,8 +186,13 @@ fn scan_folder(state: State<'_, AppState>, path: String, recursive: bool) -> Res
 }
 
 /// Largest file `import_bytes` accepts. The whole file travels through
-/// memory once on its way to disk, which is fine for books and comics.
+/// memory once on its way to disk, so this stays modest.
 const MAX_IMPORT_BYTES: usize = 512 * 1024 * 1024;
+
+/// Largest file `import_uri` accepts. It streams to disk and never holds
+/// the file in memory, so this only guards against filling the phone with
+/// something unexpected; omnibus comics run to several gigabytes.
+const MAX_STREAMED_IMPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Import a file the front end has already read, for platforms where the
 /// file picker returns something other than a path: on Android it is a
@@ -296,7 +301,8 @@ async fn import_uri(
     let copied = (|| -> std::io::Result<u64> {
         let mut out = std::fs::File::create(&tmp)?;
         out.write_all(&head[..got])?;
-        let rest = std::io::copy(&mut src.take(MAX_IMPORT_BYTES as u64), &mut out)?;
+        // One byte past the limit is enough to know it was exceeded.
+        let rest = std::io::copy(&mut src.take(MAX_STREAMED_IMPORT_BYTES + 1), &mut out)?;
         out.flush()?;
         Ok(got as u64 + rest)
     })();
@@ -307,9 +313,9 @@ async fn import_uri(
             return Err(format!("could not copy the chosen file: {e}"));
         }
     };
-    if size > MAX_IMPORT_BYTES as u64 {
+    if size > MAX_STREAMED_IMPORT_BYTES {
         std::fs::remove_file(&tmp).ok();
-        return Err("that file is too large to import".into());
+        return Err("that file is over 4 GB, too large to import".into());
     }
 
     let stem = name
