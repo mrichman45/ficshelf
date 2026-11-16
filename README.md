@@ -1,0 +1,221 @@
+# FicShelf
+
+A local reading library for **EPUB**, **PDF** and **CBZ** files, with an
+optional Archive of Our Own fetcher attached.
+
+Everything lives on your own machine. Books you add stay where they are on
+disk; works saved from AO3 are downloaded into a folder you choose. Nothing is
+uploaded, nothing is served to anyone else, and the app works with no internet
+at all apart from the AO3 features.
+
+---
+
+## What it does
+
+**Library** — add individual files or scan a whole folder. Covers and titles
+are read out of EPUBs automatically; comics use their first page; PDFs get a
+cover the first time you open them. Right-click a book to remove it from the
+library (the file itself is never deleted).
+
+**Reader** — EPUB via epub.js with your place remembered as a CFI, PDF via
+pdf.js remembering the page, CBZ as a page-turner reading images straight out
+of the archive without extracting anything. Arrow keys turn pages, Escape goes
+back.
+
+**Search AO3** — search by words, or paste a work link or id to save it
+directly. Saved searches can be re-run from the sidebar.
+
+**Bookmarks** — once signed in, lists your AO3 Bookmarks and Marked for
+Later twenty at a time, marking which are already in your library. **Save**
+puts a work in a download queue; nothing downloads until you press **Start**,
+and each run saves at most 5, 10 or 20 works, then stops. After a run that
+uses its whole allowance, Start is unavailable for a minute. There is no
+"save all", on purpose — see below.
+
+**Updates** — re-checks saved AO3 works that are not finished and tells you
+which have new chapters, so you can download the newer version.
+
+---
+
+## Building
+
+You need [Rust](https://rustup.rs) and [Node 20+](https://nodejs.org).
+
+### Linux (CachyOS / Arch)
+
+```fish
+sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file openssl \
+                        appmenu-gtk-module libappindicator-gtk3 librsvg
+npm install
+npm run tauri build
+```
+
+Output lands in `src-tauri/target/release/bundle/` as an AppImage and a `.deb`.
+For a plain binary, `src-tauri/target/release/ficshelf`.
+
+To run it while working on it: `npm run tauri dev`.
+
+### Windows
+
+Install the [Microsoft C++ Build
+Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and
+[WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (already
+present on Windows 11), then:
+
+```powershell
+npm install
+npm run tauri build
+```
+
+Output lands in `src-tauri\target\release\bundle\` as an `.msi` and an NSIS
+`.exe`.
+
+### Android (Galaxy phones and other 64-bit ARM devices)
+
+One-time setup on CachyOS (fish):
+
+```fish
+sudo pacman -S --needed jdk17-openjdk
+paru -S android-studio
+# In Android Studio: More Actions → SDK Manager. Install Android 15 (API 35),
+# Build-Tools, NDK (Side by side), Command-line Tools and Platform-Tools.
+set -Ux JAVA_HOME /usr/lib/jvm/java-17-openjdk
+set -Ux ANDROID_HOME $HOME/Android/Sdk
+set -Ux NDK_HOME $ANDROID_HOME/ndk/(ls $ANDROID_HOME/ndk | tail -1)
+fish_add_path $ANDROID_HOME/platform-tools
+rustup target add aarch64-linux-android
+npm install
+npm run tauri android init      # once; creates src-tauri/gen/android
+```
+
+Build an APK, then install it on a phone connected over USB:
+
+```fish
+npm run tauri android build -- --apk --target aarch64 --debug
+adb install -r (find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)
+```
+
+Or copy the APK to the phone and open it, allowing "Install unknown apps"
+for the file manager when Android asks. A debug APK is signed with this
+computer's debug key, so later builds from the same computer install over it.
+
+`npm run tauri android dev` runs it live on a connected phone while you work.
+
+What is different on a phone:
+
+- **Your password is not stored.** There is no system keyring for the app to
+  use, so you sign in once per launch and nothing is kept.
+- **Add files… copies** the chosen files into the app's own storage, because
+  Android only lends the app the original. There is no Add folder.
+- **Swipe or tap the edges to turn pages**; tap the middle to hide the
+  toolbar. Long-press a cover to remove it. The back button leaves the
+  reader.
+
+### Both at once, without a Windows machine
+
+Push this to a GitHub repository and run the **build** workflow from the
+Actions tab. It builds on Ubuntu and Windows in parallel and attaches the
+installers as artefacts. Tagging a commit `v0.1.0` runs it automatically.
+
+Cross-compiling Windows binaries from Linux is possible but not worth the
+trouble here — the GitHub runner is simpler and gives you a clean machine.
+
+---
+
+## How the AO3 part behaves
+
+This matters more than the features, so it is written down rather than assumed.
+
+- **Works are fetched through AO3's own Download link**, the same one you would
+  click on the page. The app never assembles a book out of scraped chapter
+  HTML.
+- **One request at a time, with at least 1.5 seconds between them**, enforced in
+  `ao3.rs` by a lock held across the wait *and* the request itself, so a slow
+  download can never overlap the next request; the gap is measured from when
+  the previous one finished. An update check over forty works therefore takes
+  over a minute, by design.
+- **Metadata is read from a work's first page**, not the full-work view, so a
+  check never makes AO3 render a whole novel to report a chapter count.
+- **The user agent identifies the app honestly**, so AO3 can recognise and
+  block it specifically if they ever wish to.
+- **Nothing is cached, re-hosted or shared.** Downloads go to your folder and
+  no further.
+- **Signing in is optional.** Everything public works without an account.
+
+### If you do sign in
+
+Many authors restrict works to registered users, so for some libraries signing
+in is the difference between the app being useful and not. How it is handled:
+
+- **The password goes to your operating system's credential store** — KDE
+  Wallet or GNOME Keyring on Linux, Credential Manager on Windows — via the
+  `keyring` crate. It is never written to the app's database, its settings, or
+  any file the app controls.
+- **The password is tried before it is stored,** so a typo is never saved.
+- **The session cookie lives in memory only,** for as long as the app is
+  running. On the next start it signs in again from the keyring.
+- **It is sent to AO3 and nowhere else.** There is no server, no telemetry,
+  nothing else to send it to.
+- **Sign out and forget** deletes the credential from the keyring and throws
+  away the session cookie, so nothing afterwards reaches AO3 as you.
+
+Two things worth understanding before you use it:
+
+1. **A stored credential is only as safe as the computer it is on.** The
+   keyring is unlocked by your desktop login, so anything running as you can
+   ask for it. This is the same trust model as a browser's saved passwords,
+   which is to say: fine on your own machine, not fine on a shared one.
+2. **Being signed in raises the stakes on rate limiting.** AO3 can ban an
+   *account* for scraping, not just an address. The 1.5-second floor exists
+   partly for this reason; do not shorten it. It is also why Bookmarks has a
+   queue with a per-run cap instead of a "save all" button: hundreds of
+   back-to-back downloads from one account is exactly the pattern AO3 blocks
+   for. A run stops by itself the moment AO3 says to slow down or the session
+   ends. The app never logs the password
+   or the cookie.
+
+If you would rather not sign in, download restricted works from the site in
+your browser and use **Add files…** — same result, nothing stored.
+
+AO3's Terms of Service FAQ forbids scraping to obtain material for commercial
+generative AI, and forbids creating an app that hosts or paywalls AO3 content.
+This app does neither, and is built to keep it that way.
+
+If you are reading a lot in one sitting, use the site. This is for keeping
+copies of things you already love.
+
+---
+
+## Layout
+
+```
+src/                 front end (vanilla JS, no framework)
+  main.js            all five screens and the three readers
+  style.css
+src-tauri/src/
+  lib.rs             Tauri commands; the seam between UI and core
+  db.rs              SQLite: books, saved searches, settings
+  archive.rs         reading inside EPUB and CBZ (both are zips)
+  opf.rs             EPUB metadata, hand-rolled and unit tested
+  ao3.rs             the paced AO3 client
+  ao3_parse.rs       AO3 URLs and numbers, unit tested
+  util.rs            file names and natural sort, unit tested
+```
+
+`opf.rs`, `ao3_parse.rs` and `util.rs` deliberately use no external crates, so
+they can be tested without a network:
+
+```fish
+cd src-tauri && cargo test
+```
+
+## Known rough edges
+
+- AO3's HTML is scraped with CSS selectors in `ao3.rs`. If AO3 changes its
+  markup, search results or chapter counts will come back empty; everything
+  else keeps working. Those selectors are kept together at the bottom of that
+  file so they are easy to fix.
+- EPUB reading position is a CFI, which is tied to that exact file. Re-download
+  a work and the position resets.
+- The library stores a cover thumbnail per book, so a very large library makes
+  a larger database. Thumbnails are whatever size the EPUB shipped.

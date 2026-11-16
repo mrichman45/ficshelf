@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FicShelf",
+  "version": "0.1.0",
+  "identifier": "org.ficshelf.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "FicShelf",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost blob: data:; worker-src 'self' blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**", "$HOME/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "category": "Education",
+    "shortDescription": "A local reading library",
+    "longDescription": "Read and organise EPUB, PDF and CBZ files from your own disk, and optionally fetch works you have saved from Archive of Our Own using its own download links.",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
+  }
+}

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>FicShelf</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <nav id="nav">
+      <div class="brand">FicShelf</div>
+      <button data-view="library" class="active">Library</button>
+      <button data-view="search">Search AO3</button>
+      <button data-view="bookmarks">Bookmarks</button>
+      <button data-view="updates">Updates <span id="update-badge" hidden>0</span></button>
+      <button data-view="settings">Settings</button>
+    </nav>
+
+    <main>
+      <!-- ------------------------------------------------- Library -->
+      <section id="view-library" class="view active">
+        <header class="bar">
+          <input id="filter" type="search" placeholder="Filter by title, author or tag…" />
+          <select id="sort">
+            <option value="added">Recently added</option>
+            <option value="recent">Recently read</option>
+            <option value="title">Title</option>
+            <option value="author">Author</option>
+          </select>
+          <button id="btn-add-files">Add files…</button>
+          <button id="btn-add-folder" class="desktop-only">Add folder…</button>
+        </header>
+        <div id="shelf" class="shelf"></div>
+        <p id="library-empty" class="empty" hidden>
+          Nothing here yet. Use <strong>Add files…</strong> for EPUB, PDF or CBZ
+          files you already have, or <strong>Search AO3</strong> to save a work.
+        </p>
+      </section>
+
+      <!-- -------------------------------------------------- Reader -->
+      <section id="view-reader" class="view">
+        <header class="bar">
+          <button id="reader-back">← Library</button>
+          <span id="reader-title" class="reader-title"></span>
+          <span class="spacer"></span>
+          <span id="reader-progress" class="muted"></span>
+          <button id="reader-prev">Previous</button>
+          <button id="reader-next">Next</button>
+        </header>
+        <div id="reader-stage" class="stage">
+          <div id="epub-area" hidden></div>
+          <canvas id="pdf-canvas" hidden></canvas>
+          <img id="cbz-image" hidden alt="" />
+          <p id="reader-error" class="error" hidden></p>
+        </div>
+      </section>
+
+      <!-- -------------------------------------------------- Search -->
+      <section id="view-search" class="view">
+        <header class="bar">
+          <input id="ao3-query" type="search" placeholder="Search AO3, or paste a work link…" />
+          <button id="btn-ao3-search">Search</button>
+          <button id="btn-save-search">Save this search</button>
+        </header>
+        <div class="split">
+          <div id="ao3-results" class="results"></div>
+          <aside id="saved-searches" class="side">
+            <h3>Saved searches</h3>
+            <ul id="saved-list"></ul>
+          </aside>
+        </div>
+        <p id="ao3-status" class="muted"></p>
+      </section>
+
+      <!-- ----------------------------------------------- Bookmarks -->
+      <section id="view-bookmarks" class="view">
+        <header class="bar">
+          <div class="tabs" role="tablist">
+            <button data-shelf="bookmarks" class="active" role="tab">Bookmarks</button>
+            <button data-shelf="later" role="tab">Marked for Later</button>
+          </div>
+          <label class="muted check">
+            <input id="shelf-hide-saved" type="checkbox" /> Hide works already saved
+          </label>
+          <span class="spacer"></span>
+          <button id="btn-shelf-refresh">Reload</button>
+        </header>
+        <div class="split">
+          <div>
+            <div id="shelf-list" class="results"></div>
+            <p id="shelf-status" class="muted"></p>
+            <button id="btn-shelf-more" hidden>Load the next 20</button>
+          </div>
+          <aside id="queue" class="side">
+            <h3>Download queue</h3>
+            <p class="muted small">
+              Works wait here until you start the queue. Each run saves at most
+              the number below, one at a time with a pause between each, then
+              stops.
+            </p>
+            <ol id="queue-list"></ol>
+            <p id="queue-empty" class="muted small">Nothing queued.</p>
+            <div class="row">
+              <label class="muted small" for="queue-cap">Per run</label>
+              <select id="queue-cap">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="20">20</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="btn-queue-start" class="primary" disabled>Start</button>
+              <button id="btn-queue-stop" hidden>Stop after this one</button>
+              <button id="btn-queue-clear" disabled>Clear</button>
+            </div>
+            <p id="queue-status" class="muted small"></p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ------------------------------------------------- Updates -->
+      <section id="view-updates" class="view">
+        <header class="bar">
+          <button id="btn-check-updates">Check for new chapters</button>
+          <span id="updates-status" class="muted"></span>
+        </header>
+        <div id="updates-list" class="results"></div>
+        <p class="empty muted">
+          Only works saved from AO3 that are not finished are checked, oldest
+          first. Each check waits a moment before the next, so a large library
+          takes a while on purpose.
+        </p>
+      </section>
+
+      <!-- ------------------------------------------------ Settings -->
+      <section id="view-settings" class="view">
+        <h2>Settings</h2>
+        <div class="setting desktop-only">
+          <label>Downloads folder</label>
+          <div class="row">
+            <code id="library-dir"></code>
+            <button id="btn-change-dir">Change…</button>
+          </div>
+          <p class="muted">
+            Works saved from AO3 are written here as EPUB files. Books you add
+            from elsewhere are left where they are.
+          </p>
+        </div>
+        <div class="setting">
+          <h3>Your AO3 account</h3>
+          <p class="muted">
+            Optional. Signing in lets you save works their authors have
+            restricted to registered users. Without it, everything public still
+            works.
+          </p>
+          <div id="ao3-signed-out">
+            <div class="row">
+              <input id="ao3-user" type="text" placeholder="AO3 username" autocomplete="username" />
+              <input id="ao3-pass" type="password" placeholder="Password" autocomplete="current-password" />
+              <button id="btn-ao3-signin" class="primary">Sign in</button>
+            </div>
+            <p class="muted">
+              This is the username you log in with, which is not always the
+              name shown on your works.
+            </p>
+          </div>
+          <div id="ao3-signed-in" hidden>
+            <div class="row">
+              <span>Signed in as <strong id="ao3-who"></strong></span>
+              <button id="btn-ao3-signout">Sign out and forget</button>
+            </div>
+          </div>
+          <p id="ao3-store-desktop" class="muted">
+            Your password is handed to your operating system's own password
+            store — KDE Wallet on Linux, Credential Manager on Windows — and is
+            never written to this app's database or settings. It is sent to AO3
+            and nowhere else. <strong>Sign out and forget</strong> deletes it.
+          </p>
+          <p id="ao3-store-phone" class="muted" hidden>
+            On a phone your password is not stored anywhere. It is sent to AO3
+            once to sign in, and you stay signed in until the app is closed.
+            Next time, sign in again here.
+          </p>
+        </div>
+
+        <div class="setting">
+          <h3>About fetching from AO3</h3>
+          <p class="muted">
+            FicShelf downloads a work using AO3's own Download link, the same
+            one you would click on the page, one at a time with a pause in
+            between. It keeps nothing but your own copies on your own disk and
+            serves nothing to anyone else. Works restricted to registered users
+            need you to be signed in above.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" hidden></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

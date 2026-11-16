@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the FicShelf main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "opener:allow-open-path",
+    "opener:allow-open-url",
+    "dialog:allow-ask",
+    "fs:allow-read-file"
+  ]
+}
