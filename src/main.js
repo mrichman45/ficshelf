@@ -394,16 +394,61 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => state.reader?.resize?.(), 200);
 });
 
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+/// The reading area's size in whole CSS pixels.
+function areaSize(el) {
+  const r = el.getBoundingClientRect();
+  return { width: Math.floor(r.width), height: Math.floor(r.height) };
+}
+
 async function openEpub(book) {
   const area = $("#epub-area");
   area.hidden = false;
 
+  // Let the reader view finish laying out before measuring it. Measured too
+  // early, the area reports a fraction of its real size and epub.js draws
+  // the book small in the top-left corner.
+  await nextFrame();
+  await nextFrame();
+  const { width, height } = areaSize(area);
+
   const epub = ePub(convertFileSrc(book.path), { openAs: "epub" });
   const rendition = epub.renderTo(area, {
-    width: "100%",
-    height: "100%",
-    spread: "auto",
+    width,
+    height,
+    flow: "paginated",
+    // Two pages side by side only when there is room for them, such as the
+    // Fold's inner screen in landscape; one page on a phone.
+    spread: width >= 800 ? "auto" : "none",
+    minSpreadWidth: 800,
   });
+
+  // Covers and other full-page images: fit the page, keep their shape, and
+  // centre them, rather than appearing at whatever size they were drawn.
+  rendition.themes.default({
+    "img, svg, image": {
+      "max-width": "100% !important",
+      "max-height": "96vh !important",
+      "object-fit": "contain",
+    },
+    "body > div:only-child > img, body > img:only-child": {
+      display: "block",
+      margin: "0 auto !important",
+    },
+  });
+
+  // Hiding the toolbar, folding or unfolding, and rotating all change the
+  // reading area's size; keep the book matched to it.
+  let resizeTimer = null;
+  const observer = new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const size = areaSize(area);
+      if (size.width > 0 && size.height > 0) rendition.resize(size.width, size.height);
+    }, 150);
+  });
+  observer.observe(area);
 
   await rendition.display(book.position || undefined);
 
@@ -426,8 +471,11 @@ async function openEpub(book) {
     kind: "epub",
     next: () => rendition.next(),
     prev: () => rendition.prev(),
-    resize: () => rendition.resize(),
+    // The ResizeObserver above already follows every size change.
+    resize: () => {},
     cleanup: () => {
+      observer.disconnect();
+      clearTimeout(resizeTimer);
       rendition.destroy();
       epub.destroy();
     },
