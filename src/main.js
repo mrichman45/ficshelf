@@ -1,6 +1,5 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
 import ePub from "epubjs";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -239,15 +238,13 @@ async function importByCopy(uris) {
   const report = { added: [], skipped: [], failed: [] };
   for (const [i, uri] of uris.entries()) {
     const n = `${i + 1} of ${uris.length}`;
-    let step = "reading the file";
+    let step = "copying it into the library";
     try {
-      toast(`Reading ${n}…`);
-      const bytes = await withTimeout(readFile(uri), 60_000, "Android did not hand over the file");
-      step = "adding it to the library";
-      toast(`Adding ${n} (${Math.round(bytes.length / 1024)} KB)…`);
-      const book = await invoke("import_bytes", bytes, {
-        headers: { "x-source": encodeURIComponent(uri) },
-      });
+      // The backend opens the link and copies the file itself, a piece at a
+      // time; passing the contents through here would run a phone out of
+      // memory on a large comic.
+      toast(`Adding ${n}…`);
+      const book = await invoke("import_uri", { uri });
       report.added.push(book);
     } catch (e) {
       const why = typeof e === "string" ? e : e?.message || String(e);

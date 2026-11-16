@@ -240,20 +240,103 @@ async fn import_bytes(
     let dir = { state.library_dir.lock().map_err(err)?.join("Imported") };
     std::fs::create_dir_all(&dir).map_err(err)?;
 
-    // Same name and same size is taken to be the same file, so importing it
-    // twice updates the entry rather than making a copy.
-    let mut path = dir.join(format!("{stem}.{format}"));
-    let mut n = 2;
-    while path.exists()
-        && std::fs::metadata(&path).map(|m| m.len()).ok() != Some(bytes.len() as u64)
-    {
-        path = dir.join(format!("{stem} ({n}).{format}"));
-        n += 1;
-    }
+    let path = import_destination(&dir, &stem, format, bytes.len() as u64);
     std::fs::write(&path, bytes).map_err(err)?;
 
     let conn = state.conn.lock().map_err(err)?;
     import_one(&conn, &path).map_err(chain)
+}
+
+/// Import a file the Android file picker chose, by its `content://` link.
+///
+/// The backend opens the link itself through the system and copies it to
+/// `<library folder>/Imported` a piece at a time, so a 300 MB comic never
+/// has to fit in memory. (Sending the bytes over IPC instead, as
+/// `import_bytes` does, works for small books but on Android the bytes
+/// travel as JSON, several times their size, and a large CBZ runs the app
+/// out of memory.)
+#[tauri::command]
+async fn import_uri(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    uri: String,
+) -> Result<db::Book, String> {
+    use std::io::{Read, Write};
+    use tauri_plugin_fs::FsExt;
+
+    let file_path: tauri_plugin_fs::FilePath = uri.parse().map_err(err)?;
+    let mut opts = tauri_plugin_fs::OpenOptions::new();
+    opts.read(true);
+    let mut src = app
+        .fs()
+        .open(file_path, opts)
+        .map_err(|e| format!("could not open the chosen file: {e}"))?;
+
+    // The first bytes say what kind of book this is.
+    let mut head = [0u8; 256];
+    let mut got = 0;
+    while got < head.len() {
+        match src.read(&mut head[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("could not read the chosen file: {e}")),
+        }
+    }
+    let name = util::name_from_uri(&uri);
+    let format = util::sniff_format(&head[..got], name.as_deref().unwrap_or(""))
+        .ok_or_else(|| "that is not an EPUB, PDF or CBZ file".to_string())?;
+
+    let dir = { state.library_dir.lock().map_err(err)?.join("Imported") };
+    std::fs::create_dir_all(&dir).map_err(err)?;
+
+    // Copy to a temporary name first, so a failed or oversized copy never
+    // leaves a half-written book where the library would find it.
+    let tmp = dir.join(format!(".importing-{}-{}.part", std::process::id(), db::now()));
+    let copied = (|| -> std::io::Result<u64> {
+        let mut out = std::fs::File::create(&tmp)?;
+        out.write_all(&head[..got])?;
+        let rest = std::io::copy(&mut src.take(MAX_IMPORT_BYTES as u64), &mut out)?;
+        out.flush()?;
+        Ok(got as u64 + rest)
+    })();
+    let size = match copied {
+        Ok(n) => n,
+        Err(e) => {
+            std::fs::remove_file(&tmp).ok();
+            return Err(format!("could not copy the chosen file: {e}"));
+        }
+    };
+    if size > MAX_IMPORT_BYTES as u64 {
+        std::fs::remove_file(&tmp).ok();
+        return Err("that file is too large to import".into());
+    }
+
+    let stem = name
+        .as_deref()
+        .and_then(|n| n.rsplit_once('.').map(|(s, _)| s.to_string()))
+        .unwrap_or_else(|| format!("Imported {}", db::now()));
+    let path = import_destination(&dir, &util::safe_filename(&stem, "Imported"), format, size);
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        std::fs::remove_file(&tmp).ok();
+        err(e)
+    })?;
+
+    let conn = state.conn.lock().map_err(err)?;
+    import_one(&conn, &path).map_err(chain)
+}
+
+/// Where an imported file goes. The same name and the same size is taken to
+/// be the same file, so importing it twice updates the entry rather than
+/// making a copy; anything else gets " (2)", " (3)" and so on.
+fn import_destination(dir: &Path, stem: &str, format: &str, size: u64) -> PathBuf {
+    let mut path = dir.join(format!("{stem}.{format}"));
+    let mut n = 2;
+    while path.exists() && std::fs::metadata(&path).map(|m| m.len()).ok() != Some(size) {
+        path = dir.join(format!("{stem} ({n}).{format}"));
+        n += 1;
+    }
+    path
 }
 
 /// A byte array that came through IPC as JSON rather than raw.
@@ -776,6 +859,7 @@ pub fn run() {
             list_books,
             import_paths,
             import_bytes,
+            import_uri,
             scan_folder,
             open_book,
             cbz_page,
