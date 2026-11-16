@@ -14,6 +14,14 @@ const IS_ANDROID = /android/i.test(navigator.userAgent);
 document.documentElement.classList.toggle("android", IS_ANDROID);
 
 const $ = (sel) => document.querySelector(sel);
+
+// Release builds on Android send nothing to the system log, so any error
+// that would otherwise vanish is shown on screen instead.
+window.addEventListener("error", (e) => toast(`Something went wrong: ${e.message}`, true));
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  toast(`Something went wrong: ${typeof r === "string" ? r : r?.message || String(r)}`, true);
+});
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const state = {
@@ -202,6 +210,14 @@ $("#sort").addEventListener("change", async (e) => {
 });
 
 $("#btn-add-files").addEventListener("click", async () => {
+  try {
+    await addFiles();
+  } catch (e) {
+    toast(`Could not add files: ${typeof e === "string" ? e : e?.message || String(e)}`, true);
+  }
+});
+
+async function addFiles() {
   const picked = await openDialog({
     multiple: true,
     // Android filters by MIME type and has none for CBZ, so a filter there
@@ -215,22 +231,27 @@ $("#btn-add-files").addEventListener("click", async () => {
   const report = IS_ANDROID ? await importByCopy(paths) : await call("import_paths", { paths });
   await refreshLibrary();
   reportImport(report);
-});
+}
 
 /// Android: read each picked file through the system and hand the bytes to
 /// the backend, which keeps a copy in the app's own storage.
 async function importByCopy(uris) {
   const report = { added: [], skipped: [], failed: [] };
   for (const [i, uri] of uris.entries()) {
-    toast(`Importing ${i + 1} of ${uris.length}…`);
+    const n = `${i + 1} of ${uris.length}`;
+    let step = "reading the file";
     try {
-      const bytes = await readFile(uri);
+      toast(`Reading ${n}…`);
+      const bytes = await withTimeout(readFile(uri), 60_000, "Android did not hand over the file");
+      step = "adding it to the library";
+      toast(`Adding ${n} (${Math.round(bytes.length / 1024)} KB)…`);
       const book = await invoke("import_bytes", bytes, {
         headers: { "x-source": encodeURIComponent(uri) },
       });
       report.added.push(book);
     } catch (e) {
-      report.failed.push([uri, typeof e === "string" ? e : String(e)]);
+      const why = typeof e === "string" ? e : e?.message || String(e);
+      report.failed.push([uri, `while ${step}: ${why}`]);
     }
   }
   return report;
@@ -244,10 +265,19 @@ $("#btn-add-folder").addEventListener("click", async () => {
   reportImport(report);
 });
 
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
 function reportImport(report) {
   const bits = [`${report.added.length} added`];
   if (report.skipped.length) bits.push(`${report.skipped.length} skipped`);
   if (report.failed.length) bits.push(`${report.failed.length} failed`);
+  // With a single failure, say why right away rather than only counting it.
+  if (report.failed.length === 1) bits.push(`— ${report.failed[0][1]}`);
   toast(bits.join(", "), report.failed.length > 0);
   if (report.failed.length) console.warn("Import failures:", report.failed);
 }
