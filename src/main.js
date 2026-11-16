@@ -958,10 +958,27 @@ document.querySelectorAll("dialog.sheet").forEach((d) =>
   }),
 );
 
-/// The reading area's size in whole CSS pixels.
+/// The reading area's size, with the width chosen so that it lands exactly
+/// on whole device pixels.
+///
+/// epub.js turns a page by sliding the text one page-width sideways. On a
+/// screen whose scale is a fraction (2.625 on the S24 Ultra, so 411.43 CSS
+/// pixels across), a width that is not a whole number of device pixels gets
+/// rounded slightly differently on every page, and the error builds up: by
+/// the middle of a chapter the text sits visibly off to one side. An even
+/// width that is a whole number of device pixels keeps every page aligned.
 function areaSize(el) {
   const r = el.getBoundingClientRect();
-  return { width: Math.floor(r.width), height: Math.floor(r.height) };
+  const dpr = window.devicePixelRatio || 1;
+  let width = Math.floor(r.width);
+  for (let w = width; w > width - 32 && w > 0; w--) {
+    const device = w * dpr;
+    if (w % 2 === 0 && Math.abs(device - Math.round(device)) < 0.001) {
+      width = w;
+      break;
+    }
+  }
+  return { width, height: Math.floor(r.height) };
 }
 
 async function openEpub(book) {
@@ -1003,6 +1020,12 @@ async function openEpub(book) {
     "body > div:only-child > img, body > img:only-child": {
       display: "block",
       margin: "0 auto !important",
+    },
+    // epub.js pads the page evenly on both sides; a book's own side margin
+    // on the body would push the text off-centre on top of that.
+    body: {
+      "margin-left": "0 !important",
+      "margin-right": "0 !important",
     },
   });
 

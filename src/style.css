@@ -235,7 +235,11 @@ button:disabled { opacity: 0.5; cursor: default; border-color: var(--line); }
 /* Pinned to the stage's edges so its size is always definite, whatever the
    flex layout around it is doing; epub.js measures this box. */
 #epub-area { position: absolute; inset: 0; overflow: hidden; }
-#epub-area .epub-container { margin: 0 auto; }
+/* The page is a few pixels narrower than the area (see areaSize), so it is
+   centred in it. */
+#epub-area { display: flex; justify-content: center; }
+#epub-area[hidden] { display: none; }
+#epub-area .epub-container { margin: 0 auto; flex: 0 0 auto; }
 /* :not([hidden]) so that showing these never overrides hiding them. */
 #pdf-canvas:not([hidden]) { max-width: 100%; height: auto; margin: 14px auto; display: block; }
 
