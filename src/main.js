@@ -992,7 +992,27 @@ async function openEpub(book) {
   await nextFrame();
   const { width, height } = areaSize(area);
 
-  const epub = ePub(convertFileSrc(book.path), { openAs: "epub" });
+  // Read the whole file through the backend and hand epub.js the bytes.
+  // Each step is timed in the console, so a slow book shows where the time
+  // goes (chrome://inspect over USB on Android).
+  const t0 = performance.now();
+  const since = () => `${Math.round(performance.now() - t0)} ms`;
+  $("#reader-progress").textContent = "Opening…";
+  const slowNote = setTimeout(() => {
+    $("#reader-progress").textContent = "Still opening…";
+    toast("Still opening; a large book can take a moment the first time.");
+  }, 15_000);
+
+  let bytes;
+  try {
+    bytes = await invoke("book_bytes", { id: book.id });
+  } catch (e) {
+    clearTimeout(slowNote);
+    throw e;
+  }
+  console.info(`[epub] read ${bytes.byteLength} bytes in ${since()}`);
+  const epub = ePub(bytes, { openAs: "binary" });
+  epub.opened.then(() => console.info(`[epub] unpacked in ${since()}`)).catch(() => {});
   const rendition = epub.renderTo(area, {
     width,
     height,
@@ -1045,16 +1065,22 @@ async function openEpub(book) {
 
   // A book that never finishes loading would otherwise leave a blank page
   // with no explanation.
-  await withTimeout(
-    rendition.display(book.position || undefined).catch(async (e) => {
-      // A saved position from an older copy of the file can fail to resolve;
-      // fall back to the start rather than not opening at all.
-      if (book.position) return rendition.display();
-      throw e;
-    }),
-    20_000,
-    "the book did not finish loading",
-  );
+  try {
+    await withTimeout(
+      rendition.display(book.position || undefined).catch(async (e) => {
+        // A saved position from an older copy of the file can fail to
+        // resolve; fall back to the start rather than not opening at all.
+        if (book.position) return rendition.display();
+        throw e;
+      }),
+      120_000,
+      "the book did not finish loading after two minutes",
+    );
+  } finally {
+    clearTimeout(slowNote);
+    $("#reader-progress").textContent = "";
+  }
+  console.info(`[epub] first page shown in ${since()}`);
 
   // Page colours and fonts go on after the book is showing, so that if one
   // of them misbehaves the book is still readable.

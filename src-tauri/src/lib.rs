@@ -466,6 +466,22 @@ fn open_book(
     Ok(OpenedBook { book, pages })
 }
 
+/// A whole EPUB's bytes, for the reader. Sent as a raw binary response
+/// rather than fetched through the asset protocol, which on Android is a
+/// slow path for files of any size.
+#[tauri::command]
+async fn book_bytes(state: State<'_, AppState>, id: i64) -> Result<tauri::ipc::Response, String> {
+    let path = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::get_book(&conn, id)
+            .map_err(chain)?
+            .ok_or_else(|| "that book is not in the library".to_string())?
+            .path
+    };
+    let bytes = std::fs::read(&path).map_err(|e| format!("could not read the book: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 fn cbz_page(state: State<'_, AppState>, id: i64, name: String) -> Result<String, String> {
     let path = {
@@ -1010,6 +1026,7 @@ pub fn run() {
             scan_folder,
             open_book,
             cbz_page,
+            book_bytes,
             book_cover,
             set_cover_from_data_url,
             save_position,
