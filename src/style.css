@@ -392,3 +392,59 @@ html:not(.android) .android-only { display: none !important; }
   .setting .row input { flex: 1 1 100%; }
   #toast { left: 10px; right: 10px; transform: none; max-width: none; bottom: calc(10px + env(safe-area-inset-bottom)); }
 }
+
+/* -------------------------------------------------------------- series */
+
+.series-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.series-head h2 { margin: 0; font-size: 18px; font-family: var(--serif); }
+.card .count {
+  position: absolute;
+  bottom: 54px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.card.series-card .placeholder { font-size: 14px; }
+.card .num {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------------------- dialogs */
+
+dialog.sheet {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  width: min(440px, calc(100vw - 24px));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.45); }
+#book-menu { display: none; }
+#book-menu[open] { display: flex; flex-direction: column; gap: 8px; }
+.sheet-title { margin: 0 0 6px; font-family: var(--serif); font-size: 16px; }
+.danger { color: var(--danger); }
+#edit-form { display: flex; flex-direction: column; gap: 10px; }
+#edit-form h3 { margin: 0 0 4px; }
+#edit-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-dim); }
+#edit-form input { color: var(--ink); }
+#edit-form .row { display: flex; gap: 8px; justify-content: flex-end; }
+
+@media (max-width: 720px) {
+  .bar .tabs { flex: 1 1 100%; }
+  .bar .tabs button { flex: 1; }
+  /* On a phone the menu slides up from the bottom edge. */
+  dialog.sheet { margin: auto auto calc(10px + env(safe-area-inset-bottom)); }
+}

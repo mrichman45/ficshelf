@@ -3,13 +3,21 @@
 
 `tauri android init` writes src-tauri/gen/android fresh, and that folder is
 not kept in git, so this runs straight after it (in CI, and by hand for local
-Android builds). It adds volume-button page turning to MainActivity:
+Android builds). It adds two things to MainActivity.
+
+Volume-button page turning:
 
 * The web side switches it on while a book is open and off otherwise, through
   a small JavaScript interface, so the buttons keep changing the volume
   everywhere else.
 * While it is on, volume down turns to the next page and volume up to the
   previous one, and the key is consumed so the volume does not change.
+
+Add folder: Android only lets an app into a folder the user picks in the
+system's own picker, and hands back a tree link rather than a path. The web
+side calls `FicShelfAndroid.pickFolder()`; this opens the picker, lists every
+EPUB, PDF and CBZ inside (subfolders included) and passes the list back to
+`window.__ficshelfFolderPicked`, which imports them one at a time.
 
 Safe to run more than once.
 """
@@ -21,9 +29,14 @@ import sys
 MARK = "// FicShelf: volume-button page turning"
 
 IMPORTS = [
+    "android.net.Uri",
+    "android.provider.DocumentsContract",
     "android.view.KeyEvent",
     "android.webkit.JavascriptInterface",
     "android.webkit.WebView",
+    "androidx.activity.result.contract.ActivityResultContracts",
+    "org.json.JSONArray",
+    "org.json.JSONObject",
 ]
 
 MEMBERS = f"""
@@ -37,7 +50,75 @@ MEMBERS = f"""
     webView.addJavascriptInterface(object {{
       @JavascriptInterface
       fun setVolumePaging(on: Boolean) {{ ficshelfVolumePaging = on }}
+
+      @JavascriptInterface
+      fun pickFolder() {{ runOnUiThread {{ ficshelfPickFolder.launch(null) }} }}
     }}, "FicShelfAndroid")
+  }}
+
+  // FicShelf: Add folder
+  private val ficshelfPickFolder =
+    registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {{ tree ->
+      if (tree == null) {{
+        ficshelfFolderResult(null)
+      }} else {{
+        Thread {{
+          val out = JSONArray()
+          try {{
+            val rootId = DocumentsContract.getTreeDocumentId(tree)
+            ficshelfListTree(tree, rootId, ficshelfDisplayName(tree, rootId) ?: "", 0, out)
+          }} catch (e: Exception) {{
+            // Whatever was listed before the failure is still worth importing.
+          }}
+          ficshelfFolderResult(out.toString())
+        }}.start()
+      }}
+    }}
+
+  private fun ficshelfFolderResult(json: String?) {{
+    val arg = if (json == null) "null" else JSONObject.quote(json)
+    ficshelfWebView?.post {{
+      ficshelfWebView?.evaluateJavascript(
+        "window.__ficshelfFolderPicked && window.__ficshelfFolderPicked(" + arg + ")", null)
+    }}
+  }}
+
+  private fun ficshelfDisplayName(tree: Uri, docId: String): String? {{
+    val uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+    contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+      ?.use {{ c -> if (c.moveToFirst()) return c.getString(0) }}
+    return null
+  }}
+
+  private fun ficshelfListTree(tree: Uri, parentId: String, folder: String, depth: Int, out: JSONArray) {{
+    if (depth > 8 || out.length() >= 5000) return
+    val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+    val cols = arrayOf(
+      DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+      DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+      DocumentsContract.Document.COLUMN_MIME_TYPE)
+    val dirs = ArrayList<Pair<String, String>>()
+    contentResolver.query(children, cols, null, null, null)?.use {{ c ->
+      while (c.moveToNext()) {{
+        val id = c.getString(0) ?: continue
+        val name = c.getString(1) ?: continue
+        val mime = c.getString(2) ?: ""
+        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {{
+          dirs.add(Pair(id, name))
+        }} else {{
+          val lower = name.lowercase()
+          if (lower.endsWith(".epub") || lower.endsWith(".pdf") ||
+              lower.endsWith(".cbz") || lower.endsWith(".zip")) {{
+            val item = JSONObject()
+            item.put("uri", DocumentsContract.buildDocumentUriUsingTree(tree, id).toString())
+            item.put("name", name)
+            item.put("folder", folder)
+            out.put(item)
+          }}
+        }}
+      }}
+    }}
+    for ((id, name) in dirs) ficshelfListTree(tree, id, name, depth + 1, out)
   }}
 
   private fun isVolumeKey(keyCode: Int) =

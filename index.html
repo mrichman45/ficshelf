@@ -20,7 +20,11 @@
       <!-- ------------------------------------------------- Library -->
       <section id="view-library" class="view active">
         <header class="bar">
-          <input id="filter" type="search" placeholder="Filter by title, author or tag…" />
+          <div class="tabs" role="tablist">
+            <button data-libview="all" class="active" role="tab">All books</button>
+            <button data-libview="series" role="tab">Series</button>
+          </div>
+          <input id="filter" type="search" placeholder="Filter by title, author or series…" />
           <select id="sort">
             <option value="added">Recently added</option>
             <option value="recent">Recently read</option>
@@ -28,8 +32,12 @@
             <option value="author">Author</option>
           </select>
           <button id="btn-add-files">Add files…</button>
-          <button id="btn-add-folder" class="desktop-only">Add folder…</button>
+          <button id="btn-add-folder">Add folder…</button>
         </header>
+        <div id="series-head" class="series-head" hidden>
+          <button id="btn-series-back">← All series</button>
+          <h2 id="series-name"></h2>
+        </div>
         <div id="shelf" class="shelf"></div>
         <p id="library-empty" class="empty" hidden>
           Nothing here yet. Use <strong>Add files…</strong> for EPUB, PDF or CBZ
@@ -207,6 +215,35 @@
         </div>
       </section>
     </main>
+
+    <!-- Long-press (phone) or right-click (desktop) on a cover. -->
+    <dialog id="book-menu" class="sheet">
+      <p id="book-menu-title" class="sheet-title"></p>
+      <button id="book-menu-edit">Edit details</button>
+      <button id="book-menu-remove" class="danger">Remove from library</button>
+      <button id="book-menu-cancel">Cancel</button>
+    </dialog>
+
+    <dialog id="edit-dialog" class="sheet">
+      <form id="edit-form" method="dialog">
+        <h3>Edit details</h3>
+        <label>Title <input id="edit-title" type="text" required /></label>
+        <label>Author <input id="edit-author" type="text" /></label>
+        <label>Series <input id="edit-series" type="text" list="series-names" /></label>
+        <label>Number in series
+          <input id="edit-index" type="number" min="0" step="any" inputmode="decimal" />
+        </label>
+        <datalist id="series-names"></datalist>
+        <p class="muted small">
+          Your changes are kept even if the file is added again or the work is
+          re-downloaded from AO3.
+        </p>
+        <div class="row">
+          <button type="button" id="edit-cancel">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
 
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.js"></script>

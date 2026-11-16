@@ -28,6 +28,14 @@ pub struct Book {
     pub last_checked_at: Option<i64>,
     pub has_update: bool,
     pub missing: bool,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    /// The name of the folder the book was added from, used to group books
+    /// that carry no series of their own.
+    pub folder: Option<String>,
+    /// True once the user has edited the details by hand; re-importing the
+    /// file then leaves title, author and series alone.
+    pub edited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +66,28 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON").ok();
 
     migrate(&conn)?;
+    add_columns(&conn)?;
     Ok(conn)
+}
+
+/// Columns added after the first release. SQLite has no ADD COLUMN IF NOT
+/// EXISTS, so each is added only when the table lacks it.
+fn add_columns(conn: &Connection) -> Result<()> {
+    let existing: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('books')")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, decl) in [
+        ("series", "TEXT"),
+        ("series_index", "REAL"),
+        ("folder", "TEXT"),
+        ("edited", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !existing.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE books ADD COLUMN {name} {decl};"))?;
+        }
+    }
+    Ok(())
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -142,6 +171,9 @@ pub struct NewBook<'a> {
     pub chapters_seen: Option<i64>,
     pub chapters_total: Option<i64>,
     pub complete: bool,
+    pub series: Option<&'a str>,
+    pub series_index: Option<f64>,
+    pub folder: Option<&'a str>,
 }
 
 /// Insert a book, or update the existing row if this path is already known.
@@ -152,13 +184,21 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
         None => (None, None),
     };
 
+    // A book the user has edited keeps their title, author and series when
+    // its file is imported again or re-downloaded from AO3.
     conn.execute(
         "INSERT INTO books(path, format, title, author, cover, cover_mime, added_at,
-                           ao3_work_id, chapters_seen, chapters_total, complete, last_checked_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                           ao3_work_id, chapters_seen, chapters_total, complete, last_checked_at,
+                           series, series_index, folder)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(path) DO UPDATE SET
-            title          = excluded.title,
-            author         = excluded.author,
+            title          = CASE WHEN books.edited THEN books.title ELSE excluded.title END,
+            author         = CASE WHEN books.edited THEN books.author ELSE excluded.author END,
+            series         = CASE WHEN books.edited THEN books.series
+                                  ELSE COALESCE(excluded.series, books.series) END,
+            series_index   = CASE WHEN books.edited THEN books.series_index
+                                  ELSE COALESCE(excluded.series_index, books.series_index) END,
+            folder         = COALESCE(excluded.folder, books.folder),
             cover          = COALESCE(excluded.cover, books.cover),
             cover_mime     = COALESCE(excluded.cover_mime, books.cover_mime),
             ao3_work_id    = COALESCE(excluded.ao3_work_id, books.ao3_work_id),
@@ -180,6 +220,9 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
             b.chapters_total,
             b.complete as i32,
             b.ao3_work_id.map(|_| now()),
+            b.series,
+            b.series_index,
+            b.folder,
         ],
     )?;
 
@@ -193,7 +236,8 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
 
 const BOOK_COLUMNS: &str = "id, path, format, title, author, cover IS NOT NULL,
      added_at, last_opened_at, position, ao3_work_id, chapters_seen,
-     chapters_total, complete, last_checked_at, has_update";
+     chapters_total, complete, last_checked_at, has_update,
+     series, series_index, folder, edited";
 
 fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     let path: String = r.get(1)?;
@@ -215,6 +259,10 @@ fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         last_checked_at: r.get(13)?,
         has_update: r.get::<_, i64>(14)? != 0,
         missing,
+        series: r.get(15)?,
+        series_index: r.get(16)?,
+        folder: r.get(17)?,
+        edited: r.get::<_, i64>(18)? != 0,
     })
 }
 
@@ -272,15 +320,20 @@ pub fn save_position(conn: &Connection, id: i64, position: &str) -> Result<()> {
     Ok(())
 }
 
+/// The user's own edit of a book's details. Marks the book as edited, so a
+/// later re-import or re-download does not undo it.
 pub fn update_metadata(
     conn: &Connection,
     id: i64,
     title: &str,
     author: Option<&str>,
+    series: Option<&str>,
+    series_index: Option<f64>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE books SET title = ?2, author = ?3 WHERE id = ?1",
-        params![id, title, author],
+        "UPDATE books SET title = ?2, author = ?3, series = ?4, series_index = ?5, edited = 1
+         WHERE id = ?1",
+        params![id, title, author, series, series_index],
     )?;
     Ok(())
 }

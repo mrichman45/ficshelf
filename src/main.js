@@ -27,6 +27,8 @@ const state = {
   books: [],
   filter: "",
   sort: "added",
+  libView: "all", // "all" or "series"
+  openSeries: null, // the group key being looked at in the Series view
   reader: null, // { book, kind, cleanup, next, prev }
 };
 
@@ -80,97 +82,264 @@ async function refreshLibrary() {
 function matchesFilter(book) {
   if (!state.filter) return true;
   const needle = state.filter.toLowerCase();
-  return (
-    book.title.toLowerCase().includes(needle) ||
-    (book.author || "").toLowerCase().includes(needle)
+  return [book.title, book.author, book.series, book.folder].some((v) =>
+    (v || "").toLowerCase().includes(needle),
   );
+}
+
+// ---------------------------------------------------------------- series
+//
+// A book's group is its series when it has one, otherwise the folder it was
+// added from, otherwise "Other books".
+
+const OTHER = "Other books";
+
+function groupOf(book) {
+  return book.series || book.folder || OTHER;
+}
+
+function seriesOrder(a, b) {
+  const ai = a.series_index ?? Infinity;
+  const bi = b.series_index ?? Infinity;
+  if (ai !== bi) return ai - bi;
+  return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function formatIndex(n) {
+  return Number.isInteger(n) ? String(n) : String(n);
+}
+
+function groups(books) {
+  const map = new Map();
+  for (const b of books) {
+    const key = groupOf(b);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(b);
+  }
+  for (const list of map.values()) list.sort(seriesOrder);
+  return [...map.entries()].sort(([a], [b]) => {
+    if (a === OTHER) return 1;
+    if (b === OTHER) return -1;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+$$(".tabs button[data-libview]").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.libView = b.dataset.libview;
+    state.openSeries = null;
+    $$(".tabs button[data-libview]").forEach((x) => x.classList.toggle("active", x === b));
+    renderShelf();
+  }),
+);
+
+$("#btn-series-back").addEventListener("click", () => {
+  state.openSeries = null;
+  renderShelf();
+});
+
+// --------------------------------------------------------------- shelf
+
+function coverInto(holder, bookId) {
+  invoke("book_cover", { id: bookId })
+    .then((url) => {
+      if (!url) return;
+      const img = document.createElement("img");
+      img.className = "cover";
+      img.src = url;
+      img.alt = "";
+      holder.replaceWith(img);
+    })
+    .catch(() => {});
+}
+
+function cardShell(titleText, subText, coverBook) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const holder = document.createElement("div");
+  holder.className = "placeholder";
+  holder.textContent = titleText;
+  card.appendChild(holder);
+  if (coverBook?.has_cover) coverInto(holder, coverBook.id);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = titleText;
+  const a = document.createElement("div");
+  a.className = "a";
+  a.textContent = subText || "";
+  meta.append(t, a);
+  card.appendChild(meta);
+  return card;
+}
+
+function bookCard(book, { showNumber = false } = {}) {
+  const card = cardShell(book.title, book.author, book);
+  card.title = book.missing ? `Missing: ${book.path}` : book.path;
+
+  const fmt = document.createElement("span");
+  fmt.className = "fmt";
+  fmt.textContent = book.format;
+  card.appendChild(fmt);
+
+  if (book.has_update) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "new";
+    card.appendChild(badge);
+  } else if (book.missing) {
+    const badge = document.createElement("span");
+    badge.className = "badge warn";
+    badge.textContent = "missing";
+    card.appendChild(badge);
+  } else if (showNumber && book.series_index != null) {
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = `#${formatIndex(book.series_index)}`;
+    card.appendChild(num);
+  }
+
+  let pressedLong = false;
+  card.addEventListener("click", () => {
+    if (pressedLong) {
+      pressedLong = false;
+      return;
+    }
+    openBook(book.id);
+  });
+  if (IS_ANDROID) {
+    onLongPress(card, () => {
+      pressedLong = true;
+      openBookMenu(book);
+    });
+  } else {
+    card.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openBookMenu(book);
+    });
+  }
+  return card;
+}
+
+function seriesCard(name, books) {
+  const card = cardShell(name, `${books.length} book${books.length === 1 ? "" : "s"}`, books.find((b) => b.has_cover) || books[0]);
+  card.classList.add("series-card");
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = String(books.length);
+  card.appendChild(count);
+  card.addEventListener("click", () => {
+    state.openSeries = name;
+    renderShelf();
+    $("#view-library").scrollTop = 0;
+  });
+  return card;
 }
 
 function renderShelf() {
   const shelf = $("#shelf");
   shelf.textContent = "";
-  const visible = state.books.filter(matchesFilter);
   $("#library-empty").hidden = state.books.length > 0;
+  const visible = state.books.filter(matchesFilter);
 
-  for (const book of visible) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.title = book.missing ? `Missing: ${book.path}` : book.path;
+  const head = $("#series-head");
+  head.hidden = !(state.libView === "series" && state.openSeries);
 
-    const fmt = document.createElement("span");
-    fmt.className = "fmt";
-    fmt.textContent = book.format;
-    card.appendChild(fmt);
-
-    if (book.has_update) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = "new";
-      card.appendChild(badge);
-    } else if (book.missing) {
-      const badge = document.createElement("span");
-      badge.className = "badge warn";
-      badge.textContent = "missing";
-      card.appendChild(badge);
-    }
-
-    const holder = document.createElement("div");
-    holder.className = "placeholder";
-    holder.textContent = book.title;
-    card.appendChild(holder);
-
-    if (book.has_cover) {
-      invoke("book_cover", { id: book.id })
-        .then((url) => {
-          if (!url) return;
-          const img = document.createElement("img");
-          img.className = "cover";
-          img.src = url;
-          img.alt = "";
-          holder.replaceWith(img);
-        })
-        .catch(() => {});
-    }
-
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const t = document.createElement("div");
-    t.className = "t";
-    t.textContent = book.title;
-    const a = document.createElement("div");
-    a.className = "a";
-    a.textContent = book.author || "";
-    meta.append(t, a);
-    card.appendChild(meta);
-
-    const offerRemove = async () => {
-      if (await confirmAsk(`Remove "${book.title}" from the library?\n\nThe file itself is not deleted.`)) {
-        call("forget_book", { id: book.id }).then(refreshLibrary);
-      }
-    };
-    let pressedLong = false;
-    card.addEventListener("click", () => {
-      if (pressedLong) {
-        pressedLong = false;
-        return;
-      }
-      openBook(book.id);
-    });
-    if (IS_ANDROID) {
-      onLongPress(card, () => {
-        pressedLong = true;
-        offerRemove();
-      });
-    } else {
-      card.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        offerRemove();
-      });
-    }
-
-    shelf.appendChild(card);
+  if (state.libView === "all") {
+    for (const book of visible) shelf.appendChild(bookCard(book));
+    return;
   }
+
+  const all = groups(visible);
+  if (state.openSeries) {
+    const entry = all.find(([k]) => k === state.openSeries);
+    if (!entry) {
+      // The series emptied (everything removed or renamed): back to the list.
+      state.openSeries = null;
+      return renderShelf();
+    }
+    $("#series-name").textContent = entry[0];
+    for (const book of entry[1]) shelf.appendChild(bookCard(book, { showNumber: true }));
+    return;
+  }
+  for (const [name, books] of all) shelf.appendChild(seriesCard(name, books));
 }
+
+// ------------------------------------------------------ menu and editing
+
+let menuBook = null;
+
+function openBookMenu(book) {
+  menuBook = book;
+  $("#book-menu-title").textContent = book.title;
+  $("#book-menu").showModal();
+}
+
+$("#book-menu-cancel").addEventListener("click", () => $("#book-menu").close());
+$("#book-menu").addEventListener("click", (e) => {
+  // A tap on the dimmed backdrop closes the menu.
+  if (e.target === $("#book-menu")) $("#book-menu").close();
+});
+
+$("#book-menu-remove").addEventListener("click", async () => {
+  $("#book-menu").close();
+  const book = menuBook;
+  if (!book) return;
+  if (await confirmAsk(`Remove "${book.title}" from the library?\n\nThe file itself is not deleted.`)) {
+    await call("forget_book", { id: book.id });
+    await refreshLibrary();
+  }
+});
+
+$("#book-menu-edit").addEventListener("click", () => {
+  $("#book-menu").close();
+  const book = menuBook;
+  if (!book) return;
+  $("#edit-title").value = book.title;
+  $("#edit-author").value = book.author || "";
+  $("#edit-series").value = book.series || "";
+  $("#edit-index").value = book.series_index ?? "";
+  const names = [...new Set(state.books.map((b) => b.series).filter(Boolean))].sort();
+  const list = $("#series-names");
+  list.textContent = "";
+  for (const n of names) {
+    const o = document.createElement("option");
+    o.value = n;
+    list.appendChild(o);
+  }
+  $("#edit-dialog").showModal();
+});
+
+$("#edit-cancel").addEventListener("click", () => $("#edit-dialog").close());
+
+$("#edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const book = menuBook;
+  if (!book) return;
+  const raw = $("#edit-index").value.trim();
+  const index = raw === "" ? null : Number(raw);
+  try {
+    await call("update_metadata", {
+      id: book.id,
+      title: $("#edit-title").value,
+      author: $("#edit-author").value,
+      series: $("#edit-series").value,
+      seriesIndex: Number.isFinite(index) ? index : null,
+    });
+  } catch {
+    return; // the toast says why; leave the form open to fix it
+  }
+  $("#edit-dialog").close();
+  // If the book moved to another series, follow it there.
+  if (state.openSeries && state.libView === "series") {
+    const moved = $("#edit-series").value.trim();
+    if (moved) state.openSeries = moved;
+  }
+  await refreshLibrary();
+  toast("Saved.");
+});
 
 /// Hold a finger still on `el` for about half a second.
 function onLongPress(el, fn) {
@@ -254,7 +423,51 @@ async function importByCopy(uris) {
   return report;
 }
 
+// Android: the native side shows the system folder picker and answers with
+// every book it found inside, which are then imported one at a time.
+let folderPicked = null;
+window.__ficshelfFolderPicked = (json) => {
+  const resolve = folderPicked;
+  folderPicked = null;
+  resolve?.(json ? JSON.parse(json) : null);
+};
+
+async function addAndroidFolder() {
+  if (!window.FicShelfAndroid?.pickFolder) {
+    toast("This version cannot add folders yet.", true);
+    return;
+  }
+  const items = await new Promise((resolve) => {
+    folderPicked = resolve;
+    window.FicShelfAndroid.pickFolder();
+  });
+  if (!items) return; // cancelled
+  if (!items.length) {
+    toast("No EPUB, PDF or CBZ files in that folder.", true);
+    return;
+  }
+  const report = { added: [], skipped: [], failed: [] };
+  for (const [i, item] of items.entries()) {
+    toast(`Adding ${i + 1} of ${items.length}: ${item.name}`);
+    try {
+      report.added.push(await invoke("import_uri", { uri: item.uri, folder: item.folder }));
+    } catch (e) {
+      report.failed.push([item.name, typeof e === "string" ? e : e?.message || String(e)]);
+    }
+  }
+  await refreshLibrary();
+  reportImport(report);
+}
+
 $("#btn-add-folder").addEventListener("click", async () => {
+  if (IS_ANDROID) {
+    try {
+      await addAndroidFolder();
+    } catch (e) {
+      toast(`Could not add the folder: ${e?.message || e}`, true);
+    }
+    return;
+  }
   const dir = await openDialog({ directory: true });
   if (!dir) return;
   const report = await call("scan_folder", { path: dir, recursive: true });

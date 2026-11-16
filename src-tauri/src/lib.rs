@@ -84,9 +84,28 @@ fn stem_title(path: &Path) -> String {
         .unwrap_or_else(|| "Untitled".to_string())
 }
 
+/// The name of the folder a file sits in, used to group books without a
+/// series of their own.
+fn parent_name(path: &Path) -> Option<String> {
+    path.parent()?
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty())
+}
+
+/// What to tell someone whose book is DRM-locked.
+fn drm_message(title: &str, kind: &str) -> String {
+    format!(
+        "\u{201c}{title}\u{201d} is locked with {kind}, so FicShelf can't open it. \
+         Read it in the store's own app, or in Adobe Digital Editions for Adobe DRM."
+    )
+}
+
 /// Import one file into the library, reading whatever metadata its format
-/// offers. Never copies or moves the file.
-fn import_one(conn: &rusqlite::Connection, path: &Path) -> Result<db::Book> {
+/// offers. Never copies or moves the file. `folder` names the folder it was
+/// added from, for grouping; DRM-locked books are refused with a clear
+/// message rather than added and then failing to open.
+fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) -> Result<db::Book> {
     let format = format_of(path)
         .ok_or_else(|| anyhow::anyhow!("{} is not an EPUB, PDF or CBZ", path.display()))?;
 
@@ -98,23 +117,41 @@ fn import_one(conn: &rusqlite::Connection, path: &Path) -> Result<db::Book> {
     let mut title = stem_title(path);
     let mut author: Option<String> = None;
     let mut cover: Option<(Vec<u8>, String)> = None;
+    let mut series: Option<String> = None;
+    let mut series_index: Option<f64> = None;
 
     match format {
         "epub" => {
+            if let Ok(Some(kind)) = archive::epub_drm(path) {
+                anyhow::bail!(drm_message(&title, kind));
+            }
             if let Ok(info) = archive::read_epub(path) {
                 if let Some(t) = info.title.filter(|t| !t.trim().is_empty()) {
                     title = t;
                 }
                 author = info.author;
                 cover = info.cover;
+                series = info.series;
+                series_index = info.series_index;
             }
         }
         "cbz" => {
-            // A comic has no metadata worth the name; the first page is the
-            // cover and the file name is the title.
+            // The first page is the cover. ComicInfo.xml, when present,
+            // supplies the title, series and issue number.
             cover = archive::cbz_cover(path).unwrap_or(None);
+            if let Ok(Some(info)) = archive::cbz_info(path) {
+                if let Some(t) = info.title {
+                    title = t;
+                }
+                author = info.writer;
+                series = info.series;
+                series_index = info.number;
+            }
         }
         _ => {
+            if let Ok(Some(kind)) = archive::pdf_drm(path) {
+                anyhow::bail!(drm_message(&title, kind));
+            }
             // PDFs keep their file name here. The front end renders page one
             // and sends it back as a cover once the book is first opened,
             // which avoids shipping a PDF parser in the backend.
@@ -131,6 +168,9 @@ fn import_one(conn: &rusqlite::Connection, path: &Path) -> Result<db::Book> {
         chapters_seen: None,
         chapters_total: None,
         complete: false,
+        series: series.as_deref(),
+        series_index,
+        folder,
     };
     let id = db::upsert_book(conn, &new)?;
     db::get_book(conn, id)?.ok_or_else(|| anyhow::anyhow!("the book vanished after import"))
@@ -159,7 +199,8 @@ fn import_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<Import
             report.skipped.push(raw);
             continue;
         }
-        match import_one(&conn, &path) {
+        let folder = parent_name(&path);
+        match import_one(&conn, &path, folder.as_deref()) {
             Ok(book) => report.added.push(book),
             Err(e) => report.failed.push((raw, chain(e))),
         }
@@ -177,7 +218,8 @@ fn scan_folder(state: State<'_, AppState>, path: String, recursive: bool) -> Res
     let conn = state.conn.lock().map_err(err)?;
     let mut report = ImportReport { added: vec![], skipped: vec![], failed: vec![] };
     for file in files {
-        match import_one(&conn, &file) {
+        let folder = parent_name(&file);
+        match import_one(&conn, &file, folder.as_deref()) {
             Ok(book) => report.added.push(book),
             Err(e) => report.failed.push((file.to_string_lossy().to_string(), chain(e))),
         }
@@ -249,7 +291,11 @@ async fn import_bytes(
     std::fs::write(&path, bytes).map_err(err)?;
 
     let conn = state.conn.lock().map_err(err)?;
-    import_one(&conn, &path).map_err(chain)
+    import_one(&conn, &path, None).map_err(|e| {
+        // Our copy is no use if it could not be added (a DRM-locked book).
+        std::fs::remove_file(&path).ok();
+        chain(e)
+    })
 }
 
 /// Import a file the Android file picker chose, by its `content://` link.
@@ -265,6 +311,7 @@ async fn import_uri(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     uri: String,
+    folder: Option<String>,
 ) -> Result<db::Book, String> {
     use std::io::{Read, Write};
     use tauri_plugin_fs::FsExt;
@@ -329,7 +376,12 @@ async fn import_uri(
     })?;
 
     let conn = state.conn.lock().map_err(err)?;
-    import_one(&conn, &path).map_err(chain)
+    let folder = folder.filter(|f| !f.trim().is_empty());
+    import_one(&conn, &path, folder.as_deref()).map_err(|e| {
+        // Our copy is no use if it could not be added (a DRM-locked book).
+        std::fs::remove_file(&path).ok();
+        chain(e)
+    })
 }
 
 /// Where an imported file goes. The same name and the same size is taken to
@@ -469,15 +521,31 @@ fn save_position(state: State<'_, AppState>, id: i64, position: String) -> Resul
     db::save_position(&conn, id, &position).map_err(chain)
 }
 
+/// Save the user's own edit of a book's details. Blank fields become empty;
+/// a blank title is refused, since every book needs one.
 #[tauri::command]
 fn update_metadata(
     state: State<'_, AppState>,
     id: i64,
     title: String,
     author: Option<String>,
-) -> Result<(), String> {
+    series: Option<String>,
+    series_index: Option<f64>,
+) -> Result<db::Book, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("A book needs a title.".into());
+    }
+    let tidy = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let author = tidy(author);
+    let series = tidy(series);
+    let series_index = series_index.filter(|n| n.is_finite() && *n >= 0.0);
     let conn = state.conn.lock().map_err(err)?;
-    db::update_metadata(&conn, id, &title, author.as_deref()).map_err(chain)
+    db::update_metadata(&conn, id, title, author.as_deref(), series.as_deref(), series_index)
+        .map_err(chain)?;
+    db::get_book(&conn, id)
+        .map_err(chain)?
+        .ok_or_else(|| "that book is not in the library".to_string())
 }
 
 #[tauri::command]
@@ -720,6 +788,9 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
         chapters_seen: Some(meta.chapters_posted as i64),
         chapters_total: meta.chapters_total.map(|c| c as i64),
         complete: meta.complete,
+        series: info.as_ref().and_then(|i| i.series.as_deref()),
+        series_index: info.as_ref().and_then(|i| i.series_index),
+        folder: None,
     };
     let id = db::upsert_book(&conn, &new).map_err(chain)?;
     db::clear_update(&conn, id, meta.chapters_posted as i64).map_err(chain)?;

@@ -12,10 +12,22 @@ at all apart from the AO3 features.
 
 ## What it does
 
-**Library** — add individual files or scan a whole folder. Covers and titles
-are read out of EPUBs automatically; comics use their first page; PDFs get a
-cover the first time you open them. Right-click a book to remove it from the
-library (the file itself is never deleted).
+**Library** — add individual files or a whole folder, subfolders included.
+Covers, titles and series are read out of EPUBs (Calibre and EPUB 3 series
+tags) and comics (`ComicInfo.xml`) automatically; comics use their first page
+as a cover; PDFs get one the first time you open them.
+
+**Series** — the Library's second tab groups books by series, or by the
+folder they were added from when they have none, in reading order.
+
+**Edit details** — right-click a cover (long-press on a phone) to change its
+title, author, series and number, or to remove it from the library (the file
+itself is never deleted). Your edits survive re-importing the file or
+re-downloading the work.
+
+**DRM** — books locked with Adobe or store DRM are recognised when added and
+refused with a clear message, since they can only be opened by software
+licensed for that DRM. FicShelf does not remove DRM.
 
 **Reader** — EPUB via epub.js with your place remembered as a CFI, PDF via
 pdf.js remembering the page, CBZ as a page-turner reading images straight out
