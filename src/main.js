@@ -14,6 +14,56 @@ document.documentElement.classList.toggle("android", IS_ANDROID);
 
 const $ = (sel) => document.querySelector(sel);
 
+// ------------------------------------------------------------------ prefs
+//
+// Small per-device preferences (theme, reading font) live in localStorage.
+// Every access is guarded: storage can be unavailable, and a preference is
+// never worth failing over.
+
+function pref(key, fallback) {
+  try {
+    return localStorage.getItem(`ficshelf.${key}`) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function setPref(key, value) {
+  try {
+    localStorage.setItem(`ficshelf.${key}`, value);
+  } catch {
+    /* lasts until the app closes */
+  }
+}
+
+// ------------------------------------------------------------------ theme
+
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let readerRestyle = null; // set while an EPUB is open
+
+/// "light", "dark" or "sepia": what is actually on screen right now.
+function effectiveTheme() {
+  const choice = pref("theme", "system");
+  if (choice === "system") return darkQuery.matches ? "dark" : "light";
+  return choice;
+}
+
+function applyTheme() {
+  const choice = pref("theme", "system");
+  if (choice === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", choice);
+  document.querySelectorAll("[data-theme-choice]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.themeChoice === choice);
+    b.setAttribute("aria-checked", String(b.dataset.themeChoice === choice));
+  });
+  // An open book follows along. (A hook rather than `state`, which does
+  // not exist yet the first time this runs.)
+  readerRestyle?.();
+}
+
+applyTheme();
+darkQuery.addEventListener?.("change", applyTheme);
+
 // Release builds on Android send nothing to the system log, so any error
 // that would otherwise vanish is shown on screen instead.
 window.addEventListener("error", (e) => toast(`Something went wrong: ${e.message}`, true));
@@ -548,6 +598,8 @@ function closeReader() {
   }
   state.reader = null;
   setVolumePaging(false);
+  $("#view-reader").classList.remove("kind-epub");
+  $("#select-bar").hidden = true;
   $("#view-reader").classList.remove("immersive");
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
@@ -681,6 +733,230 @@ window.addEventListener("resize", () => {
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
+// ------------------------------------------------- page colours and fonts
+
+// The page inside an EPUB matches the app's theme. Dark and Sepia also set
+// the text colour firmly, since a book that fixes its own black text would
+// otherwise be unreadable on a dark page.
+const PAGE_THEMES = {
+  light: { bg: "#faf7f3", ink: "#201b18", link: "#9c5a28", force: false },
+  dark: { bg: "#14110f", ink: "#e6dfd7", link: "#d9a070", force: true },
+  sepia: { bg: "#f4ecd8", ink: "#3b2f22", link: "#8a5a2b", force: true },
+};
+
+function registerPageThemes(rendition) {
+  for (const [name, t] of Object.entries(PAGE_THEMES)) {
+    const imp = t.force ? " !important" : "";
+    rendition.themes.register(name, {
+      body: { background: `${t.bg}${imp}`, color: `${t.ink}${imp}` },
+      "p, div, span, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, em, strong, i, b": t.force
+        ? { color: "inherit !important", "background-color": "transparent !important" }
+        : {},
+      a: { color: `${t.link}${imp}` },
+    });
+  }
+}
+
+const FONT_SIZES = [70, 80, 90, 100, 110, 120, 135, 150, 170, 200];
+const FACES = {
+  book: "",
+  serif: 'Georgia, "Iowan Old Style", "Palatino Linotype", serif',
+  sans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+};
+
+function fontSize() {
+  const n = Number(pref("fontSize", "100"));
+  return FONT_SIZES.includes(n) ? n : 100;
+}
+
+function applyPageStyle(rendition) {
+  rendition.themes.select(effectiveTheme());
+  rendition.themes.fontSize(`${fontSize()}%`);
+  rendition.themes.font(FACES[pref("fontFace", "book")] ?? "");
+}
+
+// --------------------------------------------------- highlights and notes
+
+const HIGHLIGHT = {
+  yellow: "#f5d33c",
+  green: "#6fcf6f",
+  blue: "#6aa9f5",
+  pink: "#f28ab2",
+};
+
+function highlightStyle(color) {
+  return { fill: HIGHLIGHT[color] || HIGHLIGHT.yellow, "fill-opacity": "0.35", "mix-blend-mode": "normal" };
+}
+
+/// Everything about the open book's annotations, set up by openEpub.
+const notes = {
+  rendition: null,
+  book: null,
+  list: [],
+  selection: null, // { cfi, text, contents } while text is selected
+  editing: null, // the annotation in the note sheet, or a pending new one
+};
+
+function drawHighlight(a) {
+  const r = notes.rendition;
+  if (!r) return;
+  r.annotations.remove(a.cfi, "highlight");
+  r.annotations.highlight(a.cfi, { id: a.id }, () => openNoteSheet(a), "ficshelf-hl", highlightStyle(a.color));
+}
+
+function clearSelection() {
+  try {
+    notes.selection?.contents?.window?.getSelection()?.removeAllRanges();
+  } catch {
+    /* the page may already have moved on */
+  }
+  notes.selection = null;
+  $("#select-bar").hidden = true;
+}
+
+async function addHighlight(color, withNote) {
+  const sel = notes.selection;
+  if (!sel || !notes.book) return;
+  clearSelection();
+  let a;
+  try {
+    a = await call("add_annotation", {
+      bookId: notes.book.id,
+      cfi: sel.cfi,
+      excerpt: sel.text,
+      note: null,
+      color,
+    });
+  } catch {
+    return;
+  }
+  notes.list.push(a);
+  drawHighlight(a);
+  if (withNote) openNoteSheet(a);
+}
+
+document.querySelectorAll("#select-bar .swatch").forEach((b) =>
+  b.addEventListener("click", () => addHighlight(b.dataset.color, false)),
+);
+$("#select-note").addEventListener("click", () => addHighlight("yellow", true));
+$("#select-cancel").addEventListener("click", clearSelection);
+
+function openNoteSheet(a) {
+  notes.editing = { ...a };
+  const ex = $("#note-excerpt");
+  ex.textContent = a.excerpt;
+  ex.style.setProperty("--c", HIGHLIGHT[a.color] || HIGHLIGHT.yellow);
+  $("#note-text").value = a.note || "";
+  document.querySelectorAll("#note-colors .swatch").forEach((b) =>
+    b.classList.toggle("active", b.dataset.color === a.color),
+  );
+  $("#note-sheet").showModal();
+}
+
+document.querySelectorAll("#note-colors .swatch").forEach((b) =>
+  b.addEventListener("click", () => {
+    if (!notes.editing) return;
+    notes.editing.color = b.dataset.color;
+    $("#note-excerpt").style.setProperty("--c", HIGHLIGHT[b.dataset.color]);
+    document.querySelectorAll("#note-colors .swatch").forEach((x) => x.classList.toggle("active", x === b));
+  }),
+);
+
+$("#note-cancel").addEventListener("click", () => $("#note-sheet").close());
+
+$("#note-save").addEventListener("click", async () => {
+  const e = notes.editing;
+  if (!e) return;
+  let updated;
+  try {
+    updated = await call("update_annotation", { id: e.id, note: $("#note-text").value, color: e.color });
+  } catch {
+    return;
+  }
+  notes.list = notes.list.map((a) => (a.id === updated.id ? updated : a));
+  drawHighlight(updated);
+  $("#note-sheet").close();
+});
+
+$("#note-delete").addEventListener("click", async () => {
+  const e = notes.editing;
+  if (!e) return;
+  try {
+    await call("delete_annotation", { id: e.id });
+  } catch {
+    return;
+  }
+  notes.list = notes.list.filter((a) => a.id !== e.id);
+  notes.rendition?.annotations.remove(e.cfi, "highlight");
+  $("#note-sheet").close();
+});
+
+$("#reader-notes").addEventListener("click", () => {
+  const list = $("#notes-list");
+  list.textContent = "";
+  $("#notes-empty").hidden = notes.list.length > 0;
+  for (const a of notes.list) {
+    const li = document.createElement("li");
+    li.style.setProperty("--c", HIGHLIGHT[a.color] || HIGHLIGHT.yellow);
+    const ex = document.createElement("div");
+    ex.className = "ex";
+    ex.textContent = a.excerpt.length > 220 ? `${a.excerpt.slice(0, 220)}…` : a.excerpt;
+    li.appendChild(ex);
+    if (a.note) {
+      const nt = document.createElement("div");
+      nt.className = "nt";
+      nt.textContent = a.note;
+      li.appendChild(nt);
+    }
+    li.addEventListener("click", () => {
+      $("#notes-sheet").close();
+      notes.rendition?.display(a.cfi);
+    });
+    list.appendChild(li);
+  }
+  $("#notes-sheet").showModal();
+});
+$("#notes-done").addEventListener("click", () => $("#notes-sheet").close());
+
+// The Aa sheet.
+function syncFontSheet() {
+  $("#font-size-label").textContent = `${fontSize()}%`;
+  const face = pref("fontFace", "book");
+  document.querySelectorAll("#font-face button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.face === face),
+  );
+}
+
+function stepFont(dir) {
+  const i = FONT_SIZES.indexOf(fontSize());
+  const next = FONT_SIZES[Math.min(Math.max(i + dir, 0), FONT_SIZES.length - 1)];
+  setPref("fontSize", String(next));
+  syncFontSheet();
+  readerRestyle?.();
+}
+
+$("#reader-aa").addEventListener("click", () => {
+  syncFontSheet();
+  $("#font-sheet").showModal();
+});
+$("#font-smaller").addEventListener("click", () => stepFont(-1));
+$("#font-larger").addEventListener("click", () => stepFont(1));
+document.querySelectorAll("#font-face button").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("fontFace", b.dataset.face);
+    syncFontSheet();
+    readerRestyle?.();
+  }),
+);
+$("#font-done").addEventListener("click", () => $("#font-sheet").close());
+
+// A tap on the dimmed area around any sheet closes it.
+document.querySelectorAll("dialog.sheet").forEach((d) =>
+  d.addEventListener("click", (e) => {
+    if (e.target === d) d.close();
+  }),
+);
+
 /// The reading area's size in whole CSS pixels.
 function areaSize(el) {
   const r = el.getBoundingClientRect();
@@ -723,6 +999,11 @@ async function openEpub(book) {
     },
   });
 
+  registerPageThemes(rendition);
+  applyPageStyle(rendition);
+  readerRestyle = () => applyPageStyle(rendition);
+  $("#view-reader").classList.add("kind-epub");
+
   // Hiding the toolbar, folding or unfolding, and rotating all change the
   // reading area's size; keep the book matched to it.
   let resizeTimer = null;
@@ -742,9 +1023,38 @@ async function openEpub(book) {
   // coordinates span every page of the chapter, not just the visible one.
   const turner = touchTurner((t) => t.screenX / window.screen.width);
   rendition.on("touchstart", (e) => turner.start(e));
-  rendition.on("touchend", (e) => turner.end(e));
+  rendition.on("touchend", (e) => {
+    // Lifting a finger after selecting text must not also turn the page.
+    const sel = e.view?.getSelection?.();
+    if (sel && !sel.isCollapsed) return;
+    turner.end(e);
+  });
+
+  // Highlights and notes.
+  notes.rendition = rendition;
+  notes.book = book;
+  notes.list = [];
+  try {
+    notes.list = await invoke("list_annotations", { bookId: book.id });
+  } catch {
+    /* a book with no readable notes still reads */
+  }
+  for (const a of notes.list) drawHighlight(a);
+
+  rendition.on("selected", (cfi, contents) => {
+    let text = "";
+    try {
+      text = contents.window.getSelection().toString();
+    } catch {
+      /* fall through to the empty check */
+    }
+    if (!text.trim()) return;
+    notes.selection = { cfi, text, contents };
+    $("#select-bar").hidden = false;
+  });
 
   rendition.on("relocated", (location) => {
+    clearSelection();
     saveWhere(book, location.start.cfi);
     const pct = epub.locations?.percentageFromCfi?.(location.start.cfi);
     $("#reader-progress").textContent =
@@ -761,6 +1071,12 @@ async function openEpub(book) {
     cleanup: () => {
       observer.disconnect();
       clearTimeout(resizeTimer);
+      readerRestyle = null;
+      clearSelection();
+      notes.rendition = null;
+      notes.book = null;
+      notes.list = [];
+      $("#view-reader").classList.remove("kind-epub");
       rendition.destroy();
       epub.destroy();
     },
@@ -1443,6 +1759,13 @@ $("#btn-change-dir").addEventListener("click", async () => {
   await refreshSettings();
   toast("Downloads folder changed.");
 });
+
+document.querySelectorAll("[data-theme-choice]").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("theme", b.dataset.themeChoice);
+    applyTheme();
+  }),
+);
 
 $("#volume-paging").checked = volumePagingWanted();
 $("#volume-paging").addEventListener("change", (e) => {

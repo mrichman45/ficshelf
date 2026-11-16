@@ -41,6 +41,20 @@ pub struct Book {
     pub drm: Option<String>,
 }
 
+/// A highlight in a book, with an optional note. `cfi` is the EPUB location
+/// of the highlighted range; `excerpt` is the highlighted text, kept so the
+/// Notes list can show it without opening the book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Annotation {
+    pub id: i64,
+    pub book_id: i64,
+    pub cfi: String,
+    pub excerpt: String,
+    pub note: Option<String>,
+    pub color: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSearch {
     pub id: i64,
@@ -126,6 +140,17 @@ fn migrate(conn: &Connection) -> Result<()> {
             created_at  INTEGER NOT NULL,
             last_run_at INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS annotations (
+            id          INTEGER PRIMARY KEY,
+            book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+            cfi         TEXT NOT NULL,
+            excerpt     TEXT NOT NULL,
+            note        TEXT,
+            color       TEXT NOT NULL DEFAULT 'yellow',
+            created_at  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS annotations_book ON annotations(book_id);
 
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
@@ -346,10 +371,81 @@ pub fn update_metadata(
     Ok(())
 }
 
-/// Remove a book from the library. The file on disk is never touched.
+/// Remove a book from the library, with its highlights and notes. The file
+/// on disk is never touched.
 pub fn forget_book(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM annotations WHERE book_id = ?1", params![id])?;
     conn.execute("DELETE FROM books WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+// ------------------------------------------------------------ annotations
+
+/// The colours a highlight may have. Anything else becomes yellow.
+pub const COLORS: [&str; 4] = ["yellow", "green", "blue", "pink"];
+
+fn row_to_annotation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
+    Ok(Annotation {
+        id: r.get(0)?,
+        book_id: r.get(1)?,
+        cfi: r.get(2)?,
+        excerpt: r.get(3)?,
+        note: r.get(4)?,
+        color: r.get(5)?,
+        created_at: r.get(6)?,
+    })
+}
+
+const ANNOTATION_COLUMNS: &str = "id, book_id, cfi, excerpt, note, color, created_at";
+
+pub fn list_annotations(conn: &Connection, book_id: i64) -> Result<Vec<Annotation>> {
+    let sql = format!(
+        "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE book_id = ?1 ORDER BY created_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![book_id], row_to_annotation)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn add_annotation(
+    conn: &Connection,
+    book_id: i64,
+    cfi: &str,
+    excerpt: &str,
+    note: Option<&str>,
+    color: &str,
+) -> Result<Annotation> {
+    let color = if COLORS.contains(&color) { color } else { "yellow" };
+    conn.execute(
+        "INSERT INTO annotations(book_id, cfi, excerpt, note, color, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![book_id, cfi, excerpt, note, color, now()],
+    )?;
+    get_annotation(conn, conn.last_insert_rowid())
+}
+
+pub fn update_annotation(
+    conn: &Connection,
+    id: i64,
+    note: Option<&str>,
+    color: &str,
+) -> Result<Annotation> {
+    let color = if COLORS.contains(&color) { color } else { "yellow" };
+    conn.execute(
+        "UPDATE annotations SET note = ?2, color = ?3 WHERE id = ?1",
+        params![id, note, color],
+    )?;
+    get_annotation(conn, id)
+}
+
+pub fn delete_annotation(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM annotations WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+fn get_annotation(conn: &Connection, id: i64) -> Result<Annotation> {
+    let sql = format!("SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id = ?1");
+    Ok(conn.query_row(&sql, params![id], row_to_annotation)?)
 }
 
 /// Books that came from AO3 and are not finished, oldest check first, so an

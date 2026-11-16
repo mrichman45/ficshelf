@@ -13,8 +13,10 @@
   --serif: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
 }
 
+/* Themes. Dark is the base above. "System" (no data-theme) follows the
+   device; the other three are chosen under Settings → Appearance. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #faf7f3;
     --panel: #fffdfa;
     --panel-2: #f1ece5;
@@ -24,6 +26,26 @@
     --accent: #9c5a28;
     --accent-ink: #fffdfa;
   }
+}
+:root[data-theme="light"] {
+  --bg: #faf7f3;
+  --panel: #fffdfa;
+  --panel-2: #f1ece5;
+  --ink: #201b18;
+  --ink-dim: #6d6158;
+  --line: #e1d8cc;
+  --accent: #9c5a28;
+  --accent-ink: #fffdfa;
+}
+:root[data-theme="sepia"] {
+  --bg: #f4ecd8;
+  --panel: #f8f1e0;
+  --panel-2: #ebe1c8;
+  --ink: #3b2f22;
+  --ink-dim: #75644f;
+  --line: #ddd0b3;
+  --accent: #8a5a2b;
+  --accent-ink: #fbf6ea;
 }
 
 * { box-sizing: border-box; }
@@ -449,3 +471,71 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.45); }
   /* On a phone the menu slides up from the bottom edge. */
   dialog.sheet { margin: auto auto calc(10px + env(safe-area-inset-bottom)); }
 }
+
+/* ------------------------------------------------- reading: text, notes */
+
+.epub-only { display: none; }
+#view-reader.kind-epub .epub-only { display: inline-flex; }
+#reader-aa, #reader-notes { min-width: 40px; justify-content: center; font-family: var(--serif); }
+
+.swatch {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+}
+.swatch[data-color="yellow"] { background: #f5d33c; }
+.swatch[data-color="green"] { background: #6fcf6f; }
+.swatch[data-color="blue"] { background: #6aa9f5; }
+.swatch[data-color="pink"] { background: #f28ab2; }
+.swatch.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--panel) inset; }
+
+#select-bar:not([hidden]) {
+  position: absolute;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+}
+#view-reader { position: relative; }
+
+.font-size-row { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 6px 0 12px; }
+#font-size-label { min-width: 4ch; text-align: center; }
+#font-face { margin-bottom: 8px; }
+#font-face button { flex: 1; }
+dialog.sheet h3 { margin: 0 0 10px; }
+dialog.sheet .row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; }
+dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
+
+#notes-list { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow: auto; }
+#notes-list li {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  border-left: 4px solid var(--c, #f5d33c);
+  cursor: pointer;
+}
+#notes-list li:last-child { border-bottom: none; }
+#notes-list .ex { font-family: var(--serif); font-size: 14px; line-height: 1.45; }
+#notes-list .nt { margin-top: 4px; font-size: 13px; color: var(--ink-dim); }
+
+#note-excerpt {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 4px solid var(--c, #f5d33c);
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.45;
+  max-height: 30vh;
+  overflow: auto;
+}
+#note-text { width: 100%; font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; resize: vertical; }

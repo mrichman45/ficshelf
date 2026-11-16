@@ -36,6 +36,14 @@ pdf.js remembering the page, CBZ as a page-turner reading images straight out
 of the archive without extracting anything. Arrow keys turn pages, Escape goes
 back.
 
+**Reading comfort** — an **Aa** button in the EPUB reader sets text size and
+a serif or sans font; **Settings → Appearance** chooses System, Light, Dark or
+Sepia for the app and the page alike.
+
+**Highlights and notes** — select text in an EPUB to highlight it in one of
+four colours or attach a note. The **✎** button lists them; tap one to jump
+there. They are kept per book in the library database and removed with it.
+
 **Search AO3** — search by words, or paste a work link or id to save it
 directly. Saved searches can be re-run from the sidebar.
 

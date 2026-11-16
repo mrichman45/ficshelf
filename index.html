@@ -52,6 +52,8 @@
           <span id="reader-title" class="reader-title"></span>
           <span class="spacer"></span>
           <span id="reader-progress" class="muted"></span>
+          <button id="reader-notes" class="epub-only" title="Highlights and notes">✎</button>
+          <button id="reader-aa" class="epub-only" title="Text size and font">Aa</button>
           <button id="reader-prev">Previous</button>
           <button id="reader-next">Next</button>
         </header>
@@ -60,6 +62,15 @@
           <canvas id="pdf-canvas" hidden></canvas>
           <img id="cbz-image" hidden alt="" />
           <p id="reader-error" class="error" hidden></p>
+        </div>
+        <!-- Shown while text is selected in an EPUB. -->
+        <div id="select-bar" hidden>
+          <button class="swatch" data-color="yellow" title="Highlight yellow"></button>
+          <button class="swatch" data-color="green" title="Highlight green"></button>
+          <button class="swatch" data-color="blue" title="Highlight blue"></button>
+          <button class="swatch" data-color="pink" title="Highlight pink"></button>
+          <button id="select-note">Note</button>
+          <button id="select-cancel" title="Cancel">✕</button>
         </div>
       </section>
 
@@ -154,6 +165,20 @@
             from elsewhere are left where they are.
           </p>
         </div>
+        <div class="setting">
+          <h3>Appearance</h3>
+          <div class="tabs" role="radiogroup" id="theme-picker">
+            <button data-theme-choice="system" role="radio">System</button>
+            <button data-theme-choice="light" role="radio">Light</button>
+            <button data-theme-choice="dark" role="radio">Dark</button>
+            <button data-theme-choice="sepia" role="radio">Sepia</button>
+          </div>
+          <p class="muted">
+            Applies to the whole app and to the pages you read. System follows
+            your device's own light or dark setting.
+          </p>
+        </div>
+
         <div class="setting android-only">
           <h3>Reading</h3>
           <label class="check">
@@ -243,6 +268,49 @@
           <button type="submit" class="primary">Save</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="font-sheet" class="sheet">
+      <h3>Text</h3>
+      <div class="row font-size-row">
+        <button id="font-smaller" aria-label="Smaller text">A−</button>
+        <span id="font-size-label">100%</span>
+        <button id="font-larger" aria-label="Larger text">A+</button>
+      </div>
+      <div class="tabs" role="radiogroup" id="font-face">
+        <button data-face="book" role="radio">Book's own</button>
+        <button data-face="serif" role="radio">Serif</button>
+        <button data-face="sans" role="radio">Sans</button>
+      </div>
+      <p class="muted small">Light, Dark and Sepia are under Settings → Appearance.</p>
+      <div class="row"><button id="font-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="notes-sheet" class="sheet">
+      <h3>Highlights and notes</h3>
+      <ul id="notes-list"></ul>
+      <p id="notes-empty" class="muted small">
+        Nothing yet. Select some text while reading to highlight it or add a
+        note.
+      </p>
+      <div class="row"><button id="notes-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="note-sheet" class="sheet">
+      <blockquote id="note-excerpt"></blockquote>
+      <div class="row swatches" id="note-colors">
+        <button class="swatch" data-color="yellow" title="Yellow"></button>
+        <button class="swatch" data-color="green" title="Green"></button>
+        <button class="swatch" data-color="blue" title="Blue"></button>
+        <button class="swatch" data-color="pink" title="Pink"></button>
+      </div>
+      <textarea id="note-text" rows="4" placeholder="Add a note…"></textarea>
+      <div class="row">
+        <button id="note-delete" class="danger">Delete</button>
+        <span class="spacer"></span>
+        <button id="note-cancel">Cancel</button>
+        <button id="note-save" class="primary">Save</button>
+      </div>
     </dialog>
 
     <div id="toast" hidden></div>

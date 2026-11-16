@@ -568,6 +568,61 @@ fn forget_book(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     db::forget_book(&conn, id).map_err(chain)
 }
 
+// ------------------------------------------------- highlights and notes
+
+/// The longest highlight kept. A selection longer than this is almost
+/// always an accident (a slip that selected a chapter), and the excerpt is
+/// only there to recognise the highlight in the Notes list.
+const MAX_EXCERPT_CHARS: usize = 2000;
+
+fn tidy_note(note: Option<String>) -> Option<String> {
+    note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+#[tauri::command]
+fn list_annotations(state: State<'_, AppState>, book_id: i64) -> Result<Vec<db::Annotation>, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::list_annotations(&conn, book_id).map_err(chain)
+}
+
+#[tauri::command]
+fn add_annotation(
+    state: State<'_, AppState>,
+    book_id: i64,
+    cfi: String,
+    excerpt: String,
+    note: Option<String>,
+    color: String,
+) -> Result<db::Annotation, String> {
+    if cfi.trim().is_empty() {
+        return Err("nothing was selected".into());
+    }
+    let excerpt: String = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if excerpt.chars().count() > MAX_EXCERPT_CHARS {
+        return Err("That selection is too long to highlight; select a shorter passage.".into());
+    }
+    let conn = state.conn.lock().map_err(err)?;
+    db::add_annotation(&conn, book_id, &cfi, &excerpt, tidy_note(note).as_deref(), &color)
+        .map_err(chain)
+}
+
+#[tauri::command]
+fn update_annotation(
+    state: State<'_, AppState>,
+    id: i64,
+    note: Option<String>,
+    color: String,
+) -> Result<db::Annotation, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::update_annotation(&conn, id, tidy_note(note).as_deref(), &color).map_err(chain)
+}
+
+#[tauri::command]
+fn delete_annotation(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::delete_annotation(&conn, id).map_err(chain)
+}
+
 // --------------------------------------------------------- AO3 sign-in
 
 #[derive(Serialize)]
@@ -961,6 +1016,10 @@ pub fn run() {
             update_metadata,
             forget_book,
             open_externally,
+            list_annotations,
+            add_annotation,
+            update_annotation,
+            delete_annotation,
             ao3_search,
             ao3_browse_tag,
             ao3_save_work,
