@@ -52,6 +52,7 @@
           <span id="reader-title" class="reader-title"></span>
           <span class="spacer"></span>
           <span id="reader-progress" class="muted"></span>
+          <button id="reader-toc" class="epub-only" title="Chapters">☰</button>
           <button id="reader-notes" class="epub-only" title="Highlights and notes">✎</button>
           <button id="reader-aa" class="epub-only" title="Text size and font">Aa</button>
           <button id="reader-comic" class="cbz-only" title="Reading direction and layout">⚙</button>
@@ -96,7 +97,10 @@
           <button id="btn-save-search">Save this search</button>
         </header>
         <div class="split">
-          <div id="ao3-results" class="results"></div>
+          <div>
+            <div id="ao3-results" class="results"></div>
+            <button id="btn-search-more" hidden>Load the next 20</button>
+          </div>
           <aside id="saved-searches" class="side">
             <h3>Saved searches</h3>
             <ul id="saved-list"></ul>
@@ -313,6 +317,16 @@
       </div>
       <p class="muted small">Light, Dark and Sepia are under Settings → Appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="toc-sheet" class="sheet">
+      <h3>Chapters</h3>
+      <ul id="toc-list"></ul>
+      <p id="toc-empty" class="muted small" hidden>
+        This book has no chapter list. Works saved from AO3 before version
+        0.3.2 can get one by saving them again.
+      </p>
+      <div class="row"><button id="toc-done" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="comic-sheet" class="sheet">

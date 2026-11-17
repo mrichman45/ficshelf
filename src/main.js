@@ -981,6 +981,65 @@ $("#reader-notes").addEventListener("click", () => {
 });
 $("#notes-done").addEventListener("click", () => $("#notes-sheet").close());
 
+// ---------------------------------------------------------------- chapters
+
+/// The book's table of contents, flattened with each entry's depth.
+function flattenToc(items, depth = 0, out = []) {
+  for (const item of items || []) {
+    out.push({ label: (item.label || "").trim() || "Untitled", href: item.href, depth });
+    flattenToc(item.subitems, depth + 1, out);
+  }
+  return out;
+}
+
+/// Whether `href` (from the table of contents) is the chapter being read.
+/// Entries may carry a #fragment; the current location's href does not.
+function sameChapter(href, current) {
+  if (!href || !current) return false;
+  const file = (h) => h.split("#")[0].split("/").pop();
+  return file(href) === file(current);
+}
+
+$("#reader-toc").addEventListener("click", async () => {
+  const epub = notes.epub;
+  if (!epub) return;
+  let toc = [];
+  try {
+    const nav = await epub.loaded.navigation;
+    toc = flattenToc(nav?.toc);
+  } catch {
+    /* a book without a table of contents */
+  }
+  const list = $("#toc-list");
+  list.textContent = "";
+  // One entry is the whole book, not a chapter list.
+  $("#toc-empty").hidden = toc.length > 1;
+  let currentEl = null;
+  if (toc.length > 1) {
+    // Several entries can share the current file (one file per book, as in
+    // works FicShelf packages itself); mark the last one at or before the
+    // reading position by order instead, when the file alone cannot tell.
+    const sameFile = toc.filter((t) => sameChapter(t.href, notes.href));
+    for (const t of toc) {
+      const li = document.createElement("li");
+      li.textContent = t.label;
+      li.style.setProperty("--depth", String(Math.min(t.depth, 4)));
+      if (sameFile.length === 1 && sameFile[0] === t) {
+        li.classList.add("current");
+        currentEl = li;
+      }
+      li.addEventListener("click", () => {
+        $("#toc-sheet").close();
+        notes.rendition?.display(t.href);
+      });
+      list.appendChild(li);
+    }
+  }
+  $("#toc-sheet").showModal();
+  currentEl?.scrollIntoView({ block: "center" });
+});
+$("#toc-done").addEventListener("click", () => $("#toc-sheet").close());
+
 // The Aa sheet.
 function syncFontSheet() {
   $("#font-size-label").textContent = `${fontSize()}%`;
@@ -1201,6 +1260,7 @@ async function openEpub(book) {
   // Highlights and notes.
   notes.rendition = rendition;
   notes.book = book;
+  notes.epub = epub;
   notes.list = [];
   try {
     notes.list = await invoke("list_annotations", { bookId: book.id });
@@ -1253,6 +1313,7 @@ async function openEpub(book) {
       pendingTurn = 0;
     }
     here = location.start.cfi;
+    notes.href = location.start.href;
     saveWhere(book, here);
     showEpubPage();
   });
@@ -1283,6 +1344,8 @@ async function openEpub(book) {
       clearSelection();
       notes.rendition = null;
       notes.book = null;
+      notes.epub = null;
+      notes.href = null;
       notes.list = [];
       $("#view-reader").classList.remove("kind-epub");
       rendition.destroy();
@@ -1791,6 +1854,33 @@ $("#ao3-query").addEventListener("keydown", (e) => {
   if (e.key === "Enter") runSearch();
 });
 
+// AO3 shows 20 works a page. More are fetched only when asked for, one
+// paced request per page.
+const AO3_PAGE_SIZE = 20;
+const searchState = { query: "", page: 0, count: 0, loading: false };
+
+$("#btn-search-more").addEventListener("click", loadMoreResults);
+
+async function loadMoreResults() {
+  if (searchState.loading || !searchState.query) return;
+  searchState.loading = true;
+  $("#btn-search-more").hidden = true;
+  $("#ao3-status").textContent = "Asking AO3…";
+  try {
+    const hits = await call("ao3_search", { query: searchState.query, page: searchState.page + 1 });
+    searchState.page += 1;
+    searchState.count += hits.length;
+    renderHits(hits, true);
+    $("#ao3-status").textContent = `${searchState.count} works.`;
+    $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
+  } catch {
+    $("#ao3-status").textContent = `${searchState.count} works.`;
+    $("#btn-search-more").hidden = false;
+  } finally {
+    searchState.loading = false;
+  }
+}
+
 async function runSearch() {
   const query = $("#ao3-query").value.trim();
   if (!query) return;
@@ -1798,6 +1888,8 @@ async function runSearch() {
   const direct = query.match(AO3_WORK_RE);
   $("#ao3-status").textContent = "Asking AO3…";
   $("#ao3-results").textContent = "";
+  $("#btn-search-more").hidden = true;
+  Object.assign(searchState, { query: "", page: 0, count: 0 });
 
   try {
     if (direct) {
@@ -1808,18 +1900,21 @@ async function runSearch() {
       return;
     }
     const hits = await call("ao3_search", { query, page: 1 });
+    Object.assign(searchState, { query, page: 1, count: hits.length });
     renderHits(hits);
     $("#ao3-status").textContent = hits.length
       ? `${hits.length} works.`
       : "Nothing found. AO3's own search page may word it differently.";
+    // A full page means AO3 probably has more.
+    $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
   } catch {
     $("#ao3-status").textContent = "";
   }
 }
 
-function renderHits(hits) {
+function renderHits(hits, append = false) {
   const box = $("#ao3-results");
-  box.textContent = "";
+  if (!append) box.textContent = "";
 
   for (const hit of hits) {
     const el = document.createElement("article");

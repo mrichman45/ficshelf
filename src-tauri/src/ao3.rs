@@ -598,7 +598,8 @@ fn epub_from_ao3_html(html: &str, meta: &WorkMeta) -> Result<Vec<u8>> {
         .next()
         .ok_or_else(|| anyhow!("AO3's HTML download had no body"))?;
     let mut out = String::with_capacity(html.len());
-    write_xhtml_children(body, &mut out);
+    let mut chapters: Vec<(String, String)> = Vec::new();
+    write_xhtml_children(body, &mut out, &mut chapters);
     if out.trim().is_empty() {
         return Err(anyhow!("AO3's HTML download was empty"));
     }
@@ -614,7 +615,13 @@ fn epub_from_ao3_html(html: &str, meta: &WorkMeta) -> Result<Vec<u8>> {
         &format!("urn:ao3:work:{}", meta.work_id),
         &g::iso_utc(crate::db::now()),
     );
-    let nav = g::nav_xhtml(&title);
+    // AO3's single-page download heads each chapter with an <h2>; those
+    // become the book's chapter list. (One heading means nothing to jump
+    // between.)
+    if chapters.len() < 2 {
+        chapters.clear();
+    }
+    let nav = g::nav_xhtml(&title, &chapters);
     let text = g::text_xhtml(&title, &style, &out);
     crate::archive::write_epub(&[
         ("META-INF/container.xml", g::CONTAINER_XML.as_bytes()),
@@ -627,7 +634,7 @@ fn epub_from_ao3_html(html: &str, meta: &WorkMeta) -> Result<Vec<u8>> {
 /// Serialise an element's children as XHTML: void elements self-closed,
 /// everything escaped, scripts and anything with an unwritable name left
 /// out.
-fn write_xhtml_children(el: ElementRef<'_>, out: &mut String) {
+fn write_xhtml_children(el: ElementRef<'_>, out: &mut String, chapters: &mut Vec<(String, String)>) {
     use crate::epubgen as g;
     for child in el.children() {
         if let Some(t) = child.value().as_text() {
@@ -641,10 +648,31 @@ fn write_xhtml_children(el: ElementRef<'_>, out: &mut String) {
         }
         out.push('<');
         out.push_str(&name);
+        // Every <h2> is a chapter heading, given an id to jump to.
+        if name == "h2" {
+            let id = ce
+                .value()
+                .attr("id")
+                .filter(|v| g::valid_xml_name(v))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("ficshelf-ch{}", chapters.len() + 1));
+            let label = g::heading_label(&ce.text().collect::<String>());
+            out.push_str(" id=\"");
+            out.push_str(&g::xml_escape(&id));
+            out.push('"');
+            if !label.is_empty() {
+                chapters.push((id, label));
+            }
+        }
         for (attr, value) in ce.value().attrs() {
             let attr = attr.to_ascii_lowercase();
-            // No event handlers, and nothing XML cannot express.
-            if attr.starts_with("on") || !g::valid_xml_name(&attr) || attr == "xmlns" {
+            // No event handlers, and nothing XML cannot express. A heading's
+            // id was written above.
+            if attr.starts_with("on")
+                || !g::valid_xml_name(&attr)
+                || attr == "xmlns"
+                || (name == "h2" && attr == "id")
+            {
                 continue;
             }
             out.push(' ');
@@ -658,7 +686,7 @@ fn write_xhtml_children(el: ElementRef<'_>, out: &mut String) {
             continue;
         }
         out.push('>');
-        write_xhtml_children(ce, out);
+        write_xhtml_children(ce, out, chapters);
         out.push_str("</");
         out.push_str(&name);
         out.push('>');

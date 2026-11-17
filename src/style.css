@@ -675,3 +675,18 @@ html[data-motion="off"] *::backdrop {
     transition: none !important;
   }
 }
+
+#btn-search-more { margin: 8px 0 24px; }
+
+/* Chapter list */
+#reader-toc { min-width: 40px; justify-content: center; }
+#toc-list { list-style: none; margin: 0; padding: 0; max-height: 65vh; overflow: auto; }
+#toc-list li {
+  padding: 10px 8px;
+  padding-left: calc(8px + var(--depth, 0) * 16px);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-family: var(--serif);
+}
+#toc-list li:last-child { border-bottom: none; }
+#toc-list li.current { font-weight: 600; border-left: 3px solid var(--accent); }

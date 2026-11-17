@@ -82,19 +82,47 @@ pub fn content_opf(title: &str, authors: &[String], identifier: &str, modified: 
     )
 }
 
-pub fn nav_xhtml(title: &str) -> String {
+/// The table of contents. `chapters` are (anchor id, heading) pairs in
+/// text.xhtml; with none, the book gets a single entry.
+pub fn nav_xhtml(title: &str, chapters: &[(String, String)]) -> String {
+    let items: String = if chapters.is_empty() {
+        format!("<li><a href=\"text.xhtml\">{}</a></li>", xml_escape(title))
+    } else {
+        chapters
+            .iter()
+            .map(|(id, label)| {
+                format!(
+                    "\n      <li><a href=\"text.xhtml#{}\">{}</a></li>",
+                    xml_escape(id),
+                    xml_escape(label)
+                )
+            })
+            .collect()
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>{t}</title></head>
 <body>
-  <nav epub:type="toc"><ol><li><a href="text.xhtml">{t}</a></li></ol></nav>
+  <nav epub:type="toc"><ol>{items}
+  </ol></nav>
 </body>
 </html>
 "#,
         t = xml_escape(title)
     )
+}
+
+/// Collapse a heading's text to one tidy line for the chapter list.
+pub fn heading_label(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.chars().count() > 120 {
+        let cut: String = joined.chars().take(117).collect();
+        format!("{cut}…")
+    } else {
+        joined
+    }
 }
 
 /// The one content page. `style` is CSS taken from the original's <style>
@@ -175,6 +203,20 @@ mod tests {
         // and it reads back through FicShelf's own OPF parser
         let meta = crate::opf::parse_opf(&opf, "OEBPS/content.opf");
         assert_eq!(meta.title.as_deref(), Some("Fish & Chips"));
+    }
+
+    #[test]
+    fn chapter_list() {
+        let nav = nav_xhtml("Work", &[]);
+        assert!(nav.contains(r#"<a href="text.xhtml">Work</a>"#));
+        let nav = nav_xhtml(
+            "Work",
+            &[("ch1".into(), "Chapter 1: Begin".into()), ("ch2".into(), "Chapter 2 & More".into())],
+        );
+        assert!(nav.contains(r#"<a href="text.xhtml#ch1">Chapter 1: Begin</a>"#));
+        assert!(nav.contains(r#"<a href="text.xhtml#ch2">Chapter 2 &amp; More</a>"#));
+        assert_eq!(heading_label("  Chapter 3:\n   The   End "), "Chapter 3: The End");
+        assert!(heading_label(&"x".repeat(200)).ends_with('…'));
     }
 
     #[test]
