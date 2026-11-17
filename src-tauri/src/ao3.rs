@@ -14,7 +14,7 @@
 
 use crate::ao3_parse as p;
 use anyhow::{anyhow, Context, Result};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +63,9 @@ pub struct WorkMeta {
     pub summary: Option<String>,
     /// The EPUB link taken from the work's own Download menu, when present.
     pub download_url: Option<String>,
+    /// The HTML link from the same menu, the fallback when EPUB downloads
+    /// are unavailable.
+    pub html_download_url: Option<String>,
 }
 
 /// One page of the user's Bookmarks or Marked for Later list.
@@ -319,46 +322,70 @@ impl Ao3Client {
             )
         });
 
+        match self.fetch_download(&url, meta.work_id).await {
+            Ok(bytes) => Ok(bytes),
+            // 429 means slow down; answering it with another request would be
+            // exactly wrong.
+            Err(DownloadError::SlowDown) => {
+                Err(anyhow!("AO3 asked us to slow down (429). Try again shortly."))
+            }
+            // Anything else: AO3 may have EPUB downloads switched off (it did
+            // after its November 2026 outage). Its own HTML download of the
+            // same work is the fallback, packaged into an EPUB here. Still
+            // AO3's Download link, still one paced request.
+            Err(DownloadError::Failed(epub_err)) => {
+                let html_url = meta.html_download_url.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}?view_adult=true",
+                        p::html_download_url(meta.work_id as u64, &meta.title)
+                    )
+                });
+                match self.fetch_download(&html_url, meta.work_id).await {
+                    Ok(html) => epub_from_ao3_html(&String::from_utf8_lossy(&html), meta)
+                        .context("packaging AO3's HTML download as an EPUB"),
+                    Err(DownloadError::SlowDown) => {
+                        Err(anyhow!("AO3 asked us to slow down (429). Try again shortly."))
+                    }
+                    Err(DownloadError::Failed(html_err)) => Err(anyhow!(
+                        "AO3 would not provide this work for download ({epub_err}; HTML: {html_err})"
+                    )),
+                }
+            }
+        }
+    }
+
+    /// One paced download request, size-limited.
+    async fn fetch_download(&self, url: &str, work_id: i64) -> std::result::Result<Vec<u8>, DownloadError> {
         let _slot = self.slot().await;
         let resp = self
             .http()
-            .get(&url)
+            .get(url)
             .send()
             .await
-            .with_context(|| format!("downloading {url}"))?;
+            .map_err(|e| DownloadError::Failed(format!("could not reach AO3: {e}")))?;
 
         let status = resp.status();
         if status.as_u16() == 429 {
-            return Err(anyhow!("AO3 asked us to slow down (429). Try again shortly."));
+            return Err(DownloadError::SlowDown);
         }
         if !status.is_success() {
-            return Err(anyhow!("AO3 returned {status} when downloading work {}", meta.work_id));
+            return Err(DownloadError::Failed(format!(
+                "AO3 returned {status} when downloading work {work_id}"
+            )));
         }
-
         if let Some(len) = resp.content_length() {
             if len as usize > MAX_DOWNLOAD_BYTES {
-                return Err(anyhow!("that download is implausibly large ({len} bytes)"));
+                return Err(DownloadError::Failed(format!(
+                    "that download is implausibly large ({len} bytes)"
+                )));
             }
         }
-
-        let bytes = resp.bytes().await.context("reading the download")?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| DownloadError::Failed(format!("reading the download: {e}")))?;
         if bytes.len() > MAX_DOWNLOAD_BYTES {
-            return Err(anyhow!("that download is implausibly large"));
-        }
-        // An EPUB is a zip; anything else means we were handed a web page,
-        // which is usually a login wall or an error.
-        if bytes.len() < 4 || &bytes[..2] != b"PK" {
-            let signed_in = *self.logged_in.lock().await;
-            return Err(anyhow!(
-                "AO3 returned a web page rather than an EPUB. {}",
-                if signed_in {
-                    "You are signed in, so this work may be restricted to users the author has \
-                     approved, or it may have been deleted."
-                } else {
-                    "This work is restricted to registered users. Sign in under Settings and \
-                     try again."
-                }
-            ));
+            return Err(DownloadError::Failed("that download is implausibly large".into()));
         }
         Ok(bytes.to_vec())
     }
@@ -522,17 +549,17 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
         .map(text_of)
         .filter(|s| !s.is_empty());
 
-    // The Download menu lists several formats; we want the EPUB.
-    let download_url = doc
-        .select(&sel("li.download a, ul.download a"))
-        .find_map(|a| {
+    // The Download menu lists several formats; we want the EPUB, and the
+    // HTML as a fallback.
+    let download_link = |ext: &str| {
+        doc.select(&sel("li.download a, ul.download a")).find_map(|a| {
             let href = a.value().attr("href")?;
-            if href.to_ascii_lowercase().contains(".epub") {
-                Some(absolute(href))
-            } else {
-                None
-            }
-        });
+            let path = href.split(['?', '#']).next().unwrap_or(href).to_ascii_lowercase();
+            path.ends_with(ext).then(|| absolute(href))
+        })
+    };
+    let download_url = download_link(".epub");
+    let html_download_url = download_link(".html");
 
     Some(WorkMeta {
         work_id,
@@ -544,7 +571,98 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
         words,
         summary,
         download_url,
+        html_download_url,
     })
+}
+
+enum DownloadError {
+    SlowDown,
+    Failed(String),
+}
+
+/// Package AO3's single-page HTML download as an EPUB: the page's <style>
+/// and <body>, re-written as well-formed XHTML, with the work's title and
+/// authors in the package. Scripts are dropped.
+fn epub_from_ao3_html(html: &str, meta: &WorkMeta) -> Result<Vec<u8>> {
+    use crate::epubgen as g;
+    let doc = Html::parse_document(html);
+
+    let style: String = doc
+        .select(&sel("head style"))
+        .map(|s| s.text().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let body = doc
+        .select(&sel("body"))
+        .next()
+        .ok_or_else(|| anyhow!("AO3's HTML download had no body"))?;
+    let mut out = String::with_capacity(html.len());
+    write_xhtml_children(body, &mut out);
+    if out.trim().is_empty() {
+        return Err(anyhow!("AO3's HTML download was empty"));
+    }
+
+    let title = if meta.title.trim().is_empty() {
+        format!("Work {}", meta.work_id)
+    } else {
+        meta.title.clone()
+    };
+    let opf = g::content_opf(
+        &title,
+        &meta.authors,
+        &format!("urn:ao3:work:{}", meta.work_id),
+        &g::iso_utc(crate::db::now()),
+    );
+    let nav = g::nav_xhtml(&title);
+    let text = g::text_xhtml(&title, &style, &out);
+    crate::archive::write_epub(&[
+        ("META-INF/container.xml", g::CONTAINER_XML.as_bytes()),
+        ("OEBPS/content.opf", opf.as_bytes()),
+        ("OEBPS/nav.xhtml", nav.as_bytes()),
+        ("OEBPS/text.xhtml", text.as_bytes()),
+    ])
+}
+
+/// Serialise an element's children as XHTML: void elements self-closed,
+/// everything escaped, scripts and anything with an unwritable name left
+/// out.
+fn write_xhtml_children(el: ElementRef<'_>, out: &mut String) {
+    use crate::epubgen as g;
+    for child in el.children() {
+        if let Some(t) = child.value().as_text() {
+            out.push_str(&g::xml_escape(t));
+            continue;
+        }
+        let Some(ce) = ElementRef::wrap(child) else { continue };
+        let name = ce.value().name().to_ascii_lowercase();
+        if name == "script" || !g::valid_xml_name(&name) {
+            continue;
+        }
+        out.push('<');
+        out.push_str(&name);
+        for (attr, value) in ce.value().attrs() {
+            let attr = attr.to_ascii_lowercase();
+            // No event handlers, and nothing XML cannot express.
+            if attr.starts_with("on") || !g::valid_xml_name(&attr) || attr == "xmlns" {
+                continue;
+            }
+            out.push(' ');
+            out.push_str(&attr);
+            out.push_str("=\"");
+            out.push_str(&g::xml_escape(value));
+            out.push('"');
+        }
+        if g::is_void(&name) {
+            out.push_str("/>");
+            continue;
+        }
+        out.push('>');
+        write_xhtml_children(ce, out);
+        out.push_str("</");
+        out.push_str(&name);
+        out.push('>');
+    }
 }
 
 fn absolute(href: &str) -> String {

@@ -138,6 +138,27 @@ pub fn cbz_pages(path: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Zip files into an EPUB. The `mimetype` entry is written first and
+/// uncompressed, as the EPUB standard requires; everything else is deflated.
+pub fn write_epub(files: &[(&str, &[u8])]) -> Result<Vec<u8>> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file(
+        "mimetype",
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+    )?;
+    zip.write_all(b"application/epub+zip")?;
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (name, bytes) in files {
+        zip.start_file(*name, deflated)?;
+        zip.write_all(bytes)?;
+    }
+    Ok(zip.finish()?.into_inner())
+}
+
 /// What the comic's `ComicInfo.xml` says, if it has one. The name is matched
 /// without regard to case or folder, since tools disagree on both.
 pub fn cbz_info(path: &Path) -> Result<Option<opf::ComicMeta>> {

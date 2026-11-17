@@ -176,6 +176,10 @@ This matters more than the features, so it is written down rather than assumed.
   download can never overlap the next request; the gap is measured from when
   the previous one finished. An update check over forty works therefore takes
   over a minute, by design.
+- **If AO3's EPUB download is unavailable** (after its November 2026 outage
+  it came back with only HTML downloads switched on), FicShelf fetches AO3's
+  own HTML download of the same work, one more paced request, and packages
+  it as an EPUB locally. Still AO3's Download link, never scraped chapters.
 - **Metadata is read from a work's first page**, not the full-work view, so a
   check never makes AO3 render a whole novel to report a chapter count.
 - **The user agent identifies the app honestly**, so AO3 can recognise and

@@ -76,6 +76,12 @@ pub fn download_url(work_id: u64, slug: &str) -> String {
     format!("{BASE}/downloads/{work_id}/{}.epub", url_slug(slug))
 }
 
+/// AO3's own HTML download of a work: the whole work as one page, from the
+/// same Download menu. Used when the EPUB download is unavailable.
+pub fn html_download_url(work_id: u64, slug: &str) -> String {
+    format!("{BASE}/downloads/{work_id}/{}.html", url_slug(slug))
+}
+
 /// A work search. `page` is 1-based; AO3 omits the parameter for page 1.
 pub fn search_url(query: &str, page: u32) -> String {
     let mut url = format!(
@@ -384,6 +390,14 @@ mod tests {
         assert!(u.contains("a%26b%3Dc%23d"), "got {u}");
         // non-ASCII
         assert!(search_url("café", 1).contains("caf%C3%A9"));
+    }
+
+    #[test]
+    fn html_downloads_sit_beside_epub_ones() {
+        assert_eq!(
+            html_download_url(258626, "A Study in Pink"),
+            "https://archiveofourown.org/downloads/258626/A-Study-in-Pink.html"
+        );
     }
 
     #[test]

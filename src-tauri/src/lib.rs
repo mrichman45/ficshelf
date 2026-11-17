@@ -10,6 +10,7 @@ mod ao3_parse;
 mod archive;
 mod creds;
 mod db;
+mod epubgen;
 mod opf;
 mod util;
 
