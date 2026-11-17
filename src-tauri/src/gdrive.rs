@@ -94,7 +94,7 @@ pub async fn poll_sign_in(http: &reqwest::Client, device_code: &str, interval: u
         .send()
         .await
         .context("reaching Google")?;
-    let reply: TokenReply = resp.json().await.context("reading Google's reply")?;
+    let reply: TokenReply = read_json(resp).await?;
     match reply.error.as_deref() {
         None => {
             let access = reply.access_token.ok_or_else(|| anyhow!("Google sent no access token"))?;
@@ -123,7 +123,7 @@ pub async fn refresh(http: &reqwest::Client, refresh_token: &str) -> Result<(Str
         .send()
         .await
         .context("reaching Google")?;
-    let reply: TokenReply = resp.json().await.context("reading Google's reply")?;
+    let reply: TokenReply = read_json(resp).await?;
     if let Some(err) = reply.error {
         return Err(if err == "invalid_grant" {
             anyhow!("Google has signed FicShelf out of Drive. Sign in again under Settings → Sync.")
@@ -159,7 +159,7 @@ pub async fn find_sync_file(http: &reqwest::Client, token: &str) -> Result<Optio
     if !status.is_success() {
         return Err(anyhow!("Google Drive answered {status} when listing the sync file"));
     }
-    let list: FileList = resp.json().await.context("reading Google Drive's reply")?;
+    let list: FileList = read_json(resp).await?;
     Ok(list.files.into_iter().next().map(|f| f.id))
 }
 
@@ -217,6 +217,13 @@ pub async fn upload(http: &reqwest::Client, token: &str, existing: Option<&str>,
         return Err(anyhow!("Google Drive answered {status} when saving the sync file: {}", short(&body)));
     }
     Ok(())
+}
+
+/// Read a JSON reply. (FicShelf's HTTP client is built without reqwest's
+/// own JSON support; serde_json does the parsing.)
+async fn read_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
+    let body = resp.text().await.context("reading Google's reply")?;
+    serde_json::from_str(&body).with_context(|| format!("Google's reply was not understood: {}", short(&body)))
 }
 
 fn not_configured() -> anyhow::Error {
