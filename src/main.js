@@ -76,6 +76,24 @@ function applyMotion() {
   });
 }
 applyMotion();
+
+// How pages turn: slide (default), shift, fade or none.
+function applyTurn() {
+  const choice = pref("turn", "slide");
+  document.documentElement.setAttribute("data-turn", choice);
+  document.querySelectorAll("[data-turn-choice]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.turnChoice === choice);
+    b.setAttribute("aria-checked", String(b.dataset.turnChoice === choice));
+  });
+}
+applyTurn();
+document.querySelectorAll("[data-turn-choice]").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("turn", b.dataset.turnChoice);
+    applyTurn();
+  }),
+);
+
 document.querySelectorAll("[data-motion-choice]").forEach((b) =>
   b.addEventListener("click", () => {
     setPref("motion", b.dataset.motionChoice);
@@ -142,6 +160,7 @@ async function confirmAsk(message) {
 
 function show(view) {
   if (view !== "reader") closeReader();
+  document.body.classList.toggle("reading", view === "reader");
   if (view === "bookmarks" && !shelfState.loadedOnce) loadShelf(true);
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
@@ -628,8 +647,9 @@ function closeReader() {
   setVolumePaging(false);
   $("#view-reader").classList.remove("kind-epub");
   $("#select-bar").hidden = true;
-  $("#page-indicator").hidden = true;
-  $("#view-reader").classList.remove("immersive");
+  $("#page-scrub").hidden = true;
+  $("#view-reader").classList.remove("show-chrome");
+  stopFooterClock();
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
   $("#pdf-canvas").hidden = true;
@@ -700,6 +720,16 @@ async function openBook(id) {
 
   closeReader();
   show("reader");
+  startFooterClock();
+  // On a phone the toolbar shows for a moment so she knows it is there, then
+  // slides away; a tap in the middle brings it back. On a computer, with no
+  // tap, it stays.
+  const viewReader = $("#view-reader");
+  viewReader.classList.add("show-chrome");
+  clearTimeout(window.__chromeTimer);
+  if (IS_ANDROID) {
+    window.__chromeTimer = setTimeout(() => viewReader.classList.remove("show-chrome"), 2500);
+  }
   setVolumePaging(true);
   if (!history.state?.reader) history.pushState({ reader: true }, "");
   $("#reader-title").textContent = book.title;
@@ -744,7 +774,7 @@ function touchTurner(pageX) {
         const x = pageX(t);
         if (x < 0.3) state.reader.prev?.();
         else if (x > 0.7) state.reader.next?.();
-        else $("#view-reader").classList.toggle("immersive");
+        else $("#view-reader").classList.toggle("show-chrome");
       }
     },
   };
@@ -777,13 +807,21 @@ const PAGE_THEMES = {
   light: { bg: "#faf7f3", ink: "#201b18", link: "#9c5a28", force: false },
   dark: { bg: "#14110f", ink: "#e6dfd7", link: "#d9a070", force: true },
   sepia: { bg: "#f4ecd8", ink: "#3b2f22", link: "#8a5a2b", force: true },
+  paper: { bg: "#ece8d8", ink: "#2a2620", link: "#7c5a2e", force: true, grain: true },
 };
+
+// The same grain as the app's Paper background, for inside EPUB pages.
+const GRAIN_URL =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.3 0 0 0 0 0.2 0 0 0 0.11 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")";
 
 function registerPageThemes(rendition) {
   for (const [name, t] of Object.entries(PAGE_THEMES)) {
     const imp = t.force ? " !important" : "";
     rendition.themes.register(name, {
-      body: { background: `${t.bg}${imp}`, color: `${t.ink}${imp}` },
+      body: {
+        background: `${t.grain ? `${GRAIN_URL} ` : ""}${t.bg}${imp}`,
+        color: `${t.ink}${imp}`,
+      },
       "p, div, span, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, em, strong, i, b": t.force
         ? { color: "inherit !important", "background-color": "transparent !important" }
         : {},
@@ -1300,8 +1338,10 @@ async function openEpub(book) {
       $("#reader-progress").textContent = `${Math.round((n / total) * 100)}%`;
     } else {
       const pct = epub.locations?.percentageFromCfi?.(here);
-      $("#reader-progress").textContent =
-        typeof pct === "number" && !Number.isNaN(pct) ? `${Math.round(pct * 100)}%` : "";
+      const text = typeof pct === "number" && !Number.isNaN(pct) ? `${Math.round(pct * 100)}%` : "";
+      $("#reader-progress").textContent = text;
+      footer.page = text;
+      renderFooter();
     }
   };
 
@@ -1358,17 +1398,92 @@ async function openEpub(book) {
   epub.ready
     .then(() => epub.locations.generate(1600))
     .then(() => {
-      if (state.reader?.book?.id === book.id) showEpubPage();
+      if (state.reader?.book?.id !== book.id) return;
+      showEpubPage();
+      // A mark where each section of the book begins, as FBReader shows.
+      try {
+        const all = epub.locations._locations || [];
+        const marks = [];
+        let last = -1;
+        all.forEach((cfi, i) => {
+          const spine = new ePub.CFI(cfi).spinePos;
+          if (spine !== last) {
+            if (i > 0) marks.push(i / all.length);
+            last = spine;
+          }
+        });
+        setFooterTicks(marks);
+      } catch {
+        /* no marks; the line still shows progress */
+      }
     })
     .catch(() => {});
 }
 
 /// The page pill at the bottom. `label` overrides the plain "n / total",
 /// for a two-page spread ("12–13 / 689").
+// ------------------------------------------------------------ status line
+//
+// Like FBReader's: a thin progress line (with a mark at each chapter, for
+// EPUBs), then the page, the time and the battery.
+
+const footer = { page: "", battery: null, clock: null, batteryHooked: false };
+
+function renderFooter() {
+  const now = new Date();
+  const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const bits = [footer.page, time];
+  if (footer.battery != null) bits.push(`${footer.battery}%`);
+  $("#foot-text").textContent = bits.filter(Boolean).join("   ");
+}
+
+function startFooterClock() {
+  $("#reader-footer").hidden = false;
+  if (!footer.batteryHooked && navigator.getBattery) {
+    footer.batteryHooked = true;
+    navigator
+      .getBattery()
+      .then((b) => {
+        const update = () => {
+          footer.battery = Math.round(b.level * 100);
+          renderFooter();
+        };
+        update();
+        b.addEventListener("levelchange", update);
+      })
+      .catch(() => {});
+  }
+  clearInterval(footer.clock);
+  footer.clock = setInterval(renderFooter, 20_000);
+  renderFooter();
+}
+
+function stopFooterClock() {
+  clearInterval(footer.clock);
+  footer.clock = null;
+  footer.page = "";
+  $("#reader-footer").hidden = true;
+  $("#foot-fill").style.width = "0";
+  $("#foot-ticks").textContent = "";
+}
+
+/// Chapter marks on the progress line, as fractions of the book (0–1).
+function setFooterTicks(fractions) {
+  const box = $("#foot-ticks");
+  box.textContent = "";
+  for (const f of fractions) {
+    if (!(f > 0 && f < 1)) continue;
+    const i = document.createElement("i");
+    i.style.left = `${(f * 100).toFixed(2)}%`;
+    box.appendChild(i);
+  }
+}
+
+/// `label` overrides the plain "n/total", for a two-page spread.
 function showPageNumber(n, total, label) {
-  const el = $("#page-indicator");
-  el.textContent = label || `${n} / ${total}`;
-  el.hidden = false;
+  footer.page = label || `${n}/${total}`;
+  $("#foot-fill").style.width = `${total ? Math.min(100, (n / total) * 100) : 0}%`;
+  renderFooter();
   if (!$("#page-scrub").hidden) syncScrub(n, total);
 }
 
@@ -1380,7 +1495,7 @@ function syncScrub(n, total) {
 }
 
 // Tap the page number for a slider; let go to jump there.
-$("#page-indicator").addEventListener("click", () => {
+$("#reader-footer").addEventListener("click", () => {
   const r = state.reader;
   if (!r?.goTo || !r.total?.()) return;
   const scrub = $("#page-scrub");
@@ -1731,7 +1846,7 @@ async function openCbz(book, pages, rtlHint) {
     clearTimeout(tapTimer);
     tapTimer = setTimeout(() => {
       lastTap = null;
-      $("#view-reader").classList.toggle("immersive");
+      $("#view-reader").classList.toggle("show-chrome");
     }, 300);
   };
 

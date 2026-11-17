@@ -37,6 +37,16 @@
   --accent: #9c5a28;
   --accent-ink: #fffdfa;
 }
+:root[data-theme="paper"] {
+  --bg: #ece8d8;
+  --panel: #f3efe1;
+  --panel-2: #e4dfcc;
+  --ink: #2a2620;
+  --ink-dim: #6e675a;
+  --line: #d6cfb9;
+  --accent: #7c5a2e;
+  --accent-ink: #f8f5ea;
+}
 :root[data-theme="sepia"] {
   --bg: #f4ecd8;
   --panel: #f8f1e0;
@@ -386,7 +396,24 @@ html:not(.android) .android-only { display: none !important; }
 .setting label.check { display: inline-flex; color: var(--ink); font-size: inherit; }
 
 /* Tap the middle of a page to hide the toolbar while reading. */
-#view-reader.immersive .bar { display: none; }
+/* Reading is full screen, like FBReader: the app's tabs go, and the
+   reader's toolbar waits above the page until a tap in the middle brings it
+   down over the page. It overlays rather than pushes, so the page never
+   moves or re-flows when it appears. */
+body.reading #nav { display: none; }
+#view-reader.active { padding: 0; }
+#view-reader .bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 12;
+  padding-top: calc(8px + env(safe-area-inset-top));
+  transform: translateY(-105%);
+  transition: transform 0.2s var(--ease, ease-out);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+#view-reader.show-chrome .bar { transform: none; }
 
 @media (pointer: coarse) {
   button, select, input { min-height: 40px; }
@@ -564,21 +591,6 @@ dialog.sheet .row.swatches { justify-content: flex-start; margin: 4px 0 10px; }
 #note-text { width: 100%; font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; resize: vertical; }
 
 /* Page number at the bottom of PDFs and comics. */
-#page-indicator:not([hidden]) {
-  position: absolute;
-  left: 50%;
-  bottom: calc(10px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  min-height: 0;
-  padding: 3px 12px;
-  border: none;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  z-index: 10;
-}
 #page-scrub:not([hidden]) {
   position: absolute;
   left: 12px;
@@ -690,3 +702,61 @@ html[data-motion="off"] *::backdrop {
 }
 #toc-list li:last-child { border-bottom: none; }
 #toc-list li.current { font-weight: 600; border-left: 3px solid var(--accent); }
+
+/* --------------------------------------------------------- paper grain */
+
+/* A faint, tiling noise, the texture of FBReader's paper background. */
+:root {
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.3 0 0 0 0 0.2 0 0 0 0.11 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+:root[data-theme="paper"] body,
+:root[data-theme="paper"] #reader-stage { background-image: var(--grain); }
+
+/* ------------------------------------------------------- status line */
+
+#reader-footer:not([hidden]) {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  height: calc(22px + env(safe-area-inset-bottom));
+  padding: 0 10px env(safe-area-inset-bottom);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-dim);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+#foot-track {
+  position: relative;
+  flex: 1;
+  height: 2px;
+  background: color-mix(in srgb, var(--ink-dim) 30%, transparent);
+  border-radius: 1px;
+}
+#foot-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--ink-dim); border-radius: 1px; }
+#foot-ticks i {
+  position: absolute;
+  top: -3px;
+  width: 1px;
+  height: 8px;
+  background: var(--ink-dim);
+  opacity: 0.55;
+}
+#foot-text { white-space: nowrap; }
+#page-scrub:not([hidden]) { bottom: calc(30px + env(safe-area-inset-bottom)); }
+
+/* ----------------------------------------------------- page turn kinds */
+
+@keyframes shift-from-right { from { transform: translateX(100%); } }
+@keyframes shift-from-left { from { transform: translateX(-100%); } }
+html[data-turn="shift"] .turn-from-right { animation: shift-from-right 0.28s var(--ease); }
+html[data-turn="shift"] .turn-from-left { animation: shift-from-left 0.28s var(--ease); }
+html[data-turn="fade"] .turn-from-right,
+html[data-turn="fade"] .turn-from-left { animation: fade-in 0.22s ease-out; }
+html[data-turn="none"] .turn-from-right,
+html[data-turn="none"] .turn-from-left { animation: none; }
+#reader-stage { overflow: hidden; }

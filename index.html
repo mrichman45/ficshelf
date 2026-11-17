@@ -73,7 +73,12 @@
         </div>
         <!-- Page number for PDFs and comics, kept visible when the toolbar
              is hidden. -->
-        <button id="page-indicator" hidden title="Go to a page"></button>
+        <!-- FBReader-style status line: progress with chapter marks, then
+             page, time and battery. Tap it to jump to a page. -->
+        <button id="reader-footer" hidden title="Go to a page">
+          <span id="foot-track"><span id="foot-fill"></span><span id="foot-ticks"></span></span>
+          <span id="foot-text"></span>
+        </button>
         <div id="page-scrub" hidden>
           <input id="page-range" type="range" min="1" max="1" step="1" />
           <span id="page-range-label"></span>
@@ -188,6 +193,7 @@
           <div class="tabs" role="radiogroup" id="theme-picker">
             <button data-theme-choice="system" role="radio">System</button>
             <button data-theme-choice="light" role="radio">Light</button>
+            <button data-theme-choice="paper" role="radio">Paper</button>
             <button data-theme-choice="dark" role="radio">Dark</button>
             <button data-theme-choice="sepia" role="radio">Sepia</button>
           </div>
@@ -195,6 +201,13 @@
             Applies to the whole app and to the pages you read. System follows
             your device's own light or dark setting.
           </p>
+          <label>Page turn</label>
+          <div class="tabs" role="radiogroup" id="turn-picker">
+            <button data-turn-choice="slide" role="radio">Slide</button>
+            <button data-turn-choice="shift" role="radio">Shift</button>
+            <button data-turn-choice="fade" role="radio">Fade</button>
+            <button data-turn-choice="none" role="radio">None</button>
+          </div>
           <label>Animations</label>
           <div class="tabs" role="radiogroup" id="motion-picker">
             <button data-motion-choice="system" role="radio">System</button>
