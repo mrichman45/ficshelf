@@ -152,6 +152,25 @@ installers as artefacts. Tagging a commit `v0.1.0` runs it automatically.
 Cross-compiling Windows binaries from Linux is possible but not worth the
 trouble here — the GitHub runner is simpler and gives you a clean machine.
 
+### Google Drive sync (one-time setup)
+
+Sync needs FicShelf registered with Google once, as an OAuth client:
+
+1. At console.cloud.google.com, create a project (e.g. "FicShelf").
+2. APIs & Services → Library → **Google Drive API** → Enable.
+3. Google Auth Platform → Get started: app name FicShelf, your email,
+   audience **External**.
+4. Data access → Add scopes → `https://www.googleapis.com/auth/drive.appdata`.
+5. Audience → **Publish app**. (Left in Testing, Google signs devices out
+   every 7 days.)
+6. Clients → Create client → type **TVs and Limited Input devices**. Copy
+   the client ID and secret.
+7. In this repository: Settings → Secrets and variables → Actions → add
+   `FICSHELF_GOOGLE_CLIENT_ID` and `FICSHELF_GOOGLE_CLIENT_SECRET`.
+
+Builds after that have sync. On each device: Settings → Sync between devices
+→ Connect Google Drive, then enter the code shown at google.com/device.
+
 ### Releases
 
 GitHub Actions builds every platform. To publish a new version:
