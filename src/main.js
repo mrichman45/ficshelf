@@ -293,17 +293,86 @@ $("#btn-series-back").addEventListener("click", () => {
 
 // --------------------------------------------------------------- shelf
 
+// Covers load only as their cards come near the screen, a few at a time.
+// A big library (hundreds of manga volumes, each cover a multi-megabyte
+// page) loaded all at once runs a phone's WebView out of memory, so each
+// large cover is also shrunk to a thumbnail the first time it is shown and
+// the thumbnail is saved in its place.
+const COVER_MAX_W = 360;
+const COVER_MAX_H = 540;
+const COVER_SMALL = 120_000; // data-URL length under which a cover is left as is
+const covers = { active: 0, waiting: [] };
+const coverObserver =
+  "IntersectionObserver" in window
+    ? new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            coverObserver.unobserve(e.target);
+            covers.waiting.push(e.target);
+          }
+          pumpCovers();
+        },
+        { rootMargin: "600px 0px" },
+      )
+    : null;
+
 function coverInto(holder, bookId) {
-  invoke("book_cover", { id: bookId })
-    .then((url) => {
-      if (!url) return;
-      const img = document.createElement("img");
-      img.className = "cover";
-      img.src = url;
-      img.alt = "";
-      holder.replaceWith(img);
-    })
-    .catch(() => {});
+  holder.dataset.coverId = bookId;
+  if (coverObserver) coverObserver.observe(holder);
+  else {
+    covers.waiting.push(holder);
+    pumpCovers();
+  }
+}
+
+function pumpCovers() {
+  while (covers.active < 3 && covers.waiting.length) {
+    const holder = covers.waiting.shift();
+    if (!holder.isConnected) continue;
+    covers.active++;
+    loadCover(holder)
+      .catch(() => {})
+      .finally(() => {
+        covers.active--;
+        pumpCovers();
+      });
+  }
+}
+
+async function loadCover(holder) {
+  const id = Number(holder.dataset.coverId);
+  let url = await invoke("book_cover", { id });
+  if (!url || !holder.isConnected) return;
+  if (url.length > COVER_SMALL) {
+    const small = await shrinkCover(url).catch(() => null);
+    url = null; // let the full-size copy go
+    if (!small) return;
+    url = small;
+    invoke("set_cover_from_data_url", { id, dataUrl: small }).catch(() => {});
+  }
+  if (!holder.isConnected) return;
+  const img = document.createElement("img");
+  img.className = "cover";
+  img.decoding = "async";
+  img.alt = "";
+  img.src = url;
+  holder.replaceWith(img);
+}
+
+async function shrinkCover(url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const scale = Math.min(1, COVER_MAX_W / img.naturalWidth, COVER_MAX_H / img.naturalHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+  img.src = "";
+  const out = canvas.toDataURL("image/jpeg", 0.82);
+  canvas.width = canvas.height = 0;
+  return out;
 }
 
 function cardShell(titleText, subText, coverBook) {

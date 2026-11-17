@@ -509,7 +509,7 @@ fn cbz_page(state: State<'_, AppState>, id: i64, name: String) -> Result<String,
 }
 
 #[tauri::command]
-fn book_cover(state: State<'_, AppState>, id: i64) -> Result<Option<String>, String> {
+async fn book_cover(state: State<'_, AppState>, id: i64) -> Result<Option<String>, String> {
     let conn = state.conn.lock().map_err(err)?;
     Ok(db::cover_bytes(&conn, id)
         .map_err(chain)?
