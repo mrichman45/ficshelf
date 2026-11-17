@@ -347,6 +347,7 @@ function renderShelf() {
   shelf.textContent = "";
   $("#library-empty").hidden = state.books.length > 0;
   const visible = state.books.filter(matchesFilter);
+  if (state.reversed) visible.reverse();
 
   const head = $("#series-head");
   head.hidden = !(state.libView === "series" && state.openSeries);
@@ -356,7 +357,15 @@ function renderShelf() {
     return;
   }
 
+  // Series are listed A to Z (Z to A when reversed); books inside a series
+  // always stay in reading order.
   const all = groups(visible);
+  if (state.reversed) {
+    all.reverse();
+    // "Other books" stays at the end either way.
+    const other = all.findIndex(([k]) => k === OTHER);
+    if (other >= 0) all.push(...all.splice(other, 1));
+  }
   if (state.openSeries) {
     const entry = all.find(([k]) => k === state.openSeries);
     if (!entry) {
@@ -505,9 +514,39 @@ $("#filter").addEventListener("input", (e) => {
   renderShelf();
 });
 
+// Sorting: what to sort by, and which way round. Both are remembered.
+// The "natural" direction of each is the one most people want first:
+// newest added, most recently read, A to Z.
+const SORT_LABELS = {
+  added: ["Newest first", "Oldest first"],
+  recent: ["Most recent first", "Least recent first"],
+  title: ["A → Z", "Z → A"],
+  author: ["A → Z", "Z → A"],
+};
+
+function syncSortButton() {
+  const [natural, reversed] = SORT_LABELS[state.sort] || SORT_LABELS.added;
+  $("#sort-dir").textContent = state.reversed ? reversed : natural;
+  $("#sort-dir").title = `Showing ${state.reversed ? reversed : natural}. Tap to reverse.`;
+}
+
+state.sort = SORT_LABELS[pref("sort", "added")] ? pref("sort", "added") : "added";
+state.reversed = pref("sortReversed", "no") === "yes";
+$("#sort").value = state.sort;
+syncSortButton();
+
 $("#sort").addEventListener("change", async (e) => {
   state.sort = e.target.value;
+  setPref("sort", state.sort);
+  syncSortButton();
   await refreshLibrary();
+});
+
+$("#sort-dir").addEventListener("click", () => {
+  state.reversed = !state.reversed;
+  setPref("sortReversed", state.reversed ? "yes" : "no");
+  syncSortButton();
+  renderShelf();
 });
 
 $("#btn-add-files").addEventListener("click", async () => {
