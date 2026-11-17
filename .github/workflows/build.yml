@@ -68,6 +68,11 @@ jobs:
 
       - name: Build
         uses: tauri-apps/tauri-action@v0
+        # Google Drive sync: the OAuth client FicShelf identifies itself as.
+        # Without these the app builds fine, with sync shown as not set up.
+        env:
+          FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
+          FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
         with:
           args: --bundles ${{ matrix.bundles }}
 
@@ -134,6 +139,9 @@ jobs:
       - run: npm install
 
       - name: Build
+        env:
+          FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
+          FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           npm run tauri android init -- --ci

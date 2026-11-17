@@ -900,3 +900,15 @@ html:not(.android) #dim-edge,
 .shelf.list .card .meta .t { font-size: 15px; white-space: normal; }
 .shelf.list .card .meta .a { color: var(--ink-dim); }
 .shelf.list .card .fmt { position: absolute; right: 8px; bottom: 8px; top: auto; left: auto; }
+
+/* Sync */
+.sync-code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 28px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  margin: 8px 0;
+  user-select: all;
+  -webkit-user-select: all;
+}
+#sync-buttons button[hidden] { display: none; }

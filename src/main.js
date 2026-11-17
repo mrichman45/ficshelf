@@ -743,6 +743,8 @@ function reportImport(report) {
 // --------------------------------------------------------------- reader
 
 function closeReader() {
+  // Closing a book is a good moment to share where she stopped.
+  if (state.reader) syncSoon();
   if (state.reader?.cleanup) {
     try {
       state.reader.cleanup();
@@ -3101,6 +3103,119 @@ async function runQueue() {
 
 renderQueue();
 
+// ------------------------------------------------------------------ sync
+//
+// Google Drive sync of positions, bookmarks, notes and edited details. It
+// runs by itself when the app starts, a moment after closing a book, and
+// when the app goes to the background; "Sync now" runs it by hand.
+
+const syncUi = { status: null, running: false, lastError: "", timer: null };
+
+function describeSync() {
+  const st = syncUi.status;
+  if (!st) return "";
+  if (!st.configured) return "Sync isn't set up in this build of FicShelf.";
+  if (!st.signed_in) return "Not connected.";
+  if (syncUi.running) return "Syncing…";
+  const when = st.last_sync_at
+    ? new Date(st.last_sync_at * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+    : "not yet";
+  return `Connected to Google Drive. Last synced: ${when}.${syncUi.lastError ? ` Last attempt failed: ${syncUi.lastError}` : ""}`;
+}
+
+async function refreshSyncStatus() {
+  try {
+    syncUi.status = await invoke("sync_status");
+  } catch {
+    syncUi.status = { configured: false, signed_in: false };
+  }
+  const st = syncUi.status;
+  $("#sync-state").textContent = describeSync();
+  $("#sync-connect").hidden = !st.configured || st.signed_in;
+  $("#sync-run").hidden = !st.signed_in;
+  $("#sync-disconnect").hidden = !st.signed_in;
+}
+
+/// Run a sync. `quiet` syncs (automatic ones) report problems only in
+/// Settings, not as a message over whatever she is doing.
+async function runSync(quiet = true) {
+  if (syncUi.running || !syncUi.status?.signed_in) return;
+  syncUi.running = true;
+  $("#sync-state").textContent = describeSync();
+  try {
+    const s = await invoke("sync_now");
+    syncUi.lastError = "";
+    const changed = s.positions + s.details + s.annotations + s.removed;
+    if (changed && !state.reader) await refreshLibrary();
+    if (!quiet) {
+      toast(
+        changed
+          ? `Synced: ${s.positions} position${s.positions === 1 ? "" : "s"}, ${s.annotations} new note${s.annotations === 1 ? "" : "s"} or bookmark${s.annotations === 1 ? "" : "s"}, ${s.details} edit${s.details === 1 ? "" : "s"} from other devices.`
+          : "Synced. Everything was already up to date.",
+      );
+    }
+  } catch (e) {
+    syncUi.lastError = typeof e === "string" ? e : e?.message || String(e);
+    if (!quiet) toast(`Sync failed: ${syncUi.lastError}`, true);
+  } finally {
+    syncUi.running = false;
+    await refreshSyncStatus();
+  }
+}
+
+/// Sync a little later, so a burst of changes becomes one sync.
+function syncSoon(delay = 2500) {
+  clearTimeout(syncUi.timer);
+  syncUi.timer = setTimeout(() => runSync(true), delay);
+}
+
+$("#sync-run").addEventListener("click", () => runSync(false));
+
+$("#sync-connect").addEventListener("click", async () => {
+  let code;
+  try {
+    code = await invoke("sync_begin_sign_in");
+  } catch (e) {
+    toast(typeof e === "string" ? e : String(e), true);
+    return;
+  }
+  $("#sync-code").textContent = code.user_code;
+  $("#sync-url").textContent = (code.verification_url || "https://www.google.com/device").replace(/^https?:\/\//, "");
+  $("#sync-open").dataset.url = code.verification_url || "https://www.google.com/device";
+  $("#sync-signin").hidden = false;
+  $("#sync-buttons").hidden = true;
+  try {
+    await invoke("sync_finish_sign_in");
+    toast("Connected to Google Drive. Syncing now.");
+    await refreshSyncStatus();
+    runSync(false);
+  } catch (e) {
+    const msg = typeof e === "string" ? e : String(e);
+    if (!/cancelled/i.test(msg)) toast(msg, true);
+  } finally {
+    $("#sync-signin").hidden = true;
+    $("#sync-buttons").hidden = false;
+    refreshSyncStatus();
+  }
+});
+
+$("#sync-open").addEventListener("click", (e) => {
+  invoke("sync_open_page", { url: e.currentTarget.dataset.url || "https://www.google.com/device" }).catch(() => {});
+});
+$("#sync-cancel").addEventListener("click", () => invoke("sync_cancel_sign_in").catch(() => {}));
+
+$("#sync-disconnect").addEventListener("click", async () => {
+  if (!(await confirmAsk("Disconnect Google Drive on this device? Your other devices keep syncing."))) return;
+  await call("sync_sign_out");
+  await refreshSyncStatus();
+});
+
+// Sync when the app goes to the background (switching apps, locking the
+// phone), so the other devices see where she stopped.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") runSync(true);
+});
+
 // ------------------------------------------------------------- settings
 
 $("#btn-change-dir").addEventListener("click", async () => {
@@ -3196,4 +3311,7 @@ $("#btn-ao3-signout").addEventListener("click", async () => {
   await refreshSavedSearches();
   await refreshSettings();
   renderUpdates(await call("list_updates"));
+  // Pick up what was read on other devices.
+  await refreshSyncStatus();
+  runSync(true);
 })().catch((e) => toast(`Could not start: ${e}`, true));

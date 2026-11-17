@@ -58,3 +58,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[lints.rust]
+# `nodeps` is set only when the dependency-free modules are tested on their
+# own, outside the app.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(nodeps)'] }

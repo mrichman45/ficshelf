@@ -11,7 +11,10 @@ mod archive;
 mod creds;
 mod db;
 mod epubgen;
+mod gdrive;
 mod opf;
+mod sync;
+mod syncdata;
 mod util;
 
 use anyhow::Result;
@@ -24,6 +27,7 @@ use tauri::{Manager, State};
 pub struct AppState {
     conn: Mutex<rusqlite::Connection>,
     ao3: ao3::Ao3Client,
+    sync: sync::SyncState,
     /// Where downloaded works are written. Books imported from elsewhere stay
     /// where they are; only AO3 downloads land here.
     library_dir: Mutex<PathBuf>,
@@ -606,6 +610,112 @@ fn look_up(app: tauri::AppHandle, word: String) -> Result<(), String> {
         .map_err(|e| format!("could not open the dictionary: {e}"))
 }
 
+// ------------------------------------------------------------------ sync
+
+#[derive(Serialize)]
+pub struct SyncStatus {
+    /// False in a build made without a Google client id.
+    pub configured: bool,
+    pub signed_in: bool,
+    pub last_sync_at: Option<i64>,
+}
+
+#[tauri::command]
+fn sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    Ok(SyncStatus {
+        configured: gdrive::client().is_some(),
+        signed_in: sync::load_refresh(&conn).ok().flatten().is_some(),
+        last_sync_at: db::get_setting(&conn, "last_sync_at")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok()),
+    })
+}
+
+/// Step one of connecting Google Drive: a code for the user to enter at
+/// Google's device page.
+#[tauri::command]
+async fn sync_begin_sign_in(state: State<'_, AppState>) -> Result<gdrive::DeviceCode, String> {
+    let http = gdrive::http().map_err(chain)?;
+    let code = gdrive::start_sign_in(&http).await.map_err(chain)?;
+    *state.sync.pending.lock().map_err(err)? = Some(code.clone());
+    Ok(code)
+}
+
+/// Step two: wait (politely, at Google's interval) for the user to approve,
+/// then keep the sign-in.
+#[tauri::command]
+async fn sync_finish_sign_in(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let code = state
+        .sync
+        .pending
+        .lock()
+        .map_err(err)?
+        .clone()
+        .ok_or_else(|| "start signing in first".to_string())?;
+    let http = gdrive::http().map_err(chain)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(code.expires_in);
+    let mut wait = code.interval.max(5);
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err("The code expired before it was entered. Try again.".into());
+        }
+        // Cancelled from the front end.
+        if state.sync.pending.lock().map_err(err)?.is_none() {
+            return Err("Sign-in cancelled.".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        match gdrive::poll_sign_in(&http, &code.device_code, wait).await.map_err(chain)? {
+            gdrive::Poll::Wait(next) => wait = next.max(5),
+            gdrive::Poll::Done { refresh, access, expires_in } => {
+                {
+                    let conn = state.conn.lock().map_err(err)?;
+                    sync::save_refresh(&conn, &refresh).map_err(chain)?;
+                }
+                state.sync.set_access(access, expires_in).await;
+                *state.sync.pending.lock().map_err(err)? = None;
+                return sync_status(state);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn sync_cancel_sign_in(state: State<'_, AppState>) -> Result<(), String> {
+    *state.sync.pending.lock().map_err(err)? = None;
+    Ok(())
+}
+
+/// Open Google's page for entering the sign-in code. Only Google's own
+/// device-sign-in addresses are opened.
+#[tauri::command]
+fn sync_open_page(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let ok = ["https://www.google.com/device", "https://google.com/device"]
+        .iter()
+        .any(|p| url == *p || url.starts_with(&format!("{p}?")));
+    let url = if ok { url } else { "https://www.google.com/device".to_string() };
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn sync_now(state: State<'_, AppState>) -> Result<sync::Summary, String> {
+    sync::run(&state.sync, &state.conn).await.map_err(chain)
+}
+
+/// Disconnect Google Drive on this device. The shared file in Drive is left
+/// for the other devices.
+#[tauri::command]
+async fn sync_sign_out(state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let conn = state.conn.lock().map_err(err)?;
+        sync::forget_refresh(&conn).map_err(chain)?;
+    }
+    state.sync.clear_access().await;
+    Ok(())
+}
+
 #[tauri::command]
 fn forget_book(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(err)?;
@@ -1042,6 +1152,7 @@ pub fn run() {
             app.manage(AppState {
                 conn: Mutex::new(conn),
                 ao3: ao3::Ao3Client::new()?,
+                sync: sync::SyncState::default(),
                 library_dir: Mutex::new(library_dir),
             });
             Ok(())
@@ -1062,6 +1173,13 @@ pub fn run() {
             forget_book,
             open_externally,
             look_up,
+            sync_status,
+            sync_begin_sign_in,
+            sync_finish_sign_in,
+            sync_cancel_sign_in,
+            sync_now,
+            sync_open_page,
+            sync_sign_out,
             list_annotations,
             add_annotation,
             update_annotation,

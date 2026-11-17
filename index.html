@@ -240,6 +240,36 @@
           </p>
         </div>
 
+        <div class="setting" id="sync-setting">
+          <h3>Sync between devices</h3>
+          <p id="sync-state" class="muted"></p>
+          <div id="sync-signin" hidden>
+            <p>
+              On any phone or computer, go to
+              <strong id="sync-url">google.com/device</strong>, sign in to the
+              Google account to sync with, and enter this code:
+            </p>
+            <p id="sync-code" class="sync-code"></p>
+            <div class="row">
+              <button id="sync-open" class="primary">Open the page here</button>
+              <button id="sync-cancel">Cancel</button>
+            </div>
+            <p class="muted small">FicShelf finishes by itself once you approve.</p>
+          </div>
+          <div class="row" id="sync-buttons">
+            <button id="sync-connect" class="primary">Connect Google Drive</button>
+            <button id="sync-run">Sync now</button>
+            <button id="sync-disconnect">Disconnect</button>
+          </div>
+          <p class="muted">
+            Syncs reading positions, bookmarks, highlights, notes and edited
+            details between every device connected to the same Google
+            account. It uses a private app folder in Drive that only FicShelf
+            can see, and never your other files. Books themselves are not
+            copied: add them on each device (AO3 works can be saved again).
+          </p>
+        </div>
+
         <div class="setting">
           <h3>Tapping the page</h3>
           <div class="tabs" role="radiogroup" id="tapzone-picker">

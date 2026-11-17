@@ -90,23 +90,41 @@ pub fn open(path: &Path) -> Result<Connection> {
 /// Columns added after the first release. SQLite has no ADD COLUMN IF NOT
 /// EXISTS, so each is added only when the table lacks it.
 fn add_columns(conn: &Connection) -> Result<()> {
-    let existing: Vec<String> = conn
-        .prepare("SELECT name FROM pragma_table_info('books')")?
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (name, decl) in [
+    add_columns_to(conn, "books", &[
         ("series", "TEXT"),
         ("series_index", "REAL"),
         ("folder", "TEXT"),
         ("edited", "INTEGER NOT NULL DEFAULT 0"),
         ("drm", "TEXT"),
-    ] {
+        // For sync: which book this is on every device, and when its
+        // position and hand-edited details last changed.
+        ("content_key", "TEXT"),
+        ("position_at", "INTEGER"),
+        ("edited_at", "INTEGER"),
+    ])?;
+    add_columns_to(conn, "annotations", &[("uid", "TEXT"), ("updated_at", "INTEGER")])?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_tombstones (
+            uid TEXT PRIMARY KEY,
+            at  INTEGER NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
+fn add_columns_to(conn: &Connection, table: &str, cols: &[(&str, &str)]) -> Result<()> {
+    let existing: Vec<String> = conn
+        .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, decl) in cols {
         if !existing.iter().any(|c| c == name) {
-            conn.execute_batch(&format!("ALTER TABLE books ADD COLUMN {name} {decl};"))?;
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} {decl};"))?;
         }
     }
     Ok(())
 }
+
 
 fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -347,7 +365,7 @@ pub fn set_cover(conn: &Connection, id: i64, bytes: &[u8], mime: &str) -> Result
 
 pub fn save_position(conn: &Connection, id: i64, position: &str) -> Result<()> {
     conn.execute(
-        "UPDATE books SET position = ?2, last_opened_at = ?3 WHERE id = ?1",
+        "UPDATE books SET position = ?2, last_opened_at = ?3, position_at = ?3 WHERE id = ?1",
         params![id, position, now()],
     )?;
     Ok(())
@@ -364,9 +382,10 @@ pub fn update_metadata(
     series_index: Option<f64>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE books SET title = ?2, author = ?3, series = ?4, series_index = ?5, edited = 1
+        "UPDATE books SET title = ?2, author = ?3, series = ?4, series_index = ?5, edited = 1,
+                          edited_at = ?6
          WHERE id = ?1",
-        params![id, title, author, series, series_index],
+        params![id, title, author, series, series_index, now()],
     )?;
     Ok(())
 }
@@ -418,10 +437,11 @@ pub fn add_annotation(
     color: &str,
 ) -> Result<Annotation> {
     let color = if COLORS.contains(&color) { color } else { "yellow" };
+    let t = now();
     conn.execute(
-        "INSERT INTO annotations(book_id, cfi, excerpt, note, color, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![book_id, cfi, excerpt, note, color, now()],
+        "INSERT INTO annotations(book_id, cfi, excerpt, note, color, created_at, uid, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6)",
+        params![book_id, cfi, excerpt, note, color, t, fresh_uid(conn)],
     )?;
     get_annotation(conn, conn.last_insert_rowid())
 }
@@ -434,14 +454,204 @@ pub fn update_annotation(
 ) -> Result<Annotation> {
     let color = if COLORS.contains(&color) { color } else { "yellow" };
     conn.execute(
-        "UPDATE annotations SET note = ?2, color = ?3 WHERE id = ?1",
-        params![id, note, color],
+        "UPDATE annotations SET note = ?2, color = ?3, updated_at = ?4 WHERE id = ?1",
+        params![id, note, color, now()],
     )?;
     get_annotation(conn, id)
 }
 
+/// Delete an annotation, leaving a tombstone so the deletion syncs.
 pub fn delete_annotation(conn: &Connection, id: i64) -> Result<()> {
+    let uid: Option<String> = conn
+        .query_row("SELECT uid FROM annotations WHERE id = ?1", params![id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    if let Some(uid) = uid {
+        conn.execute(
+            "INSERT INTO sync_tombstones(uid, at) VALUES(?1, ?2)
+             ON CONFLICT(uid) DO UPDATE SET at = excluded.at",
+            params![uid, now()],
+        )?;
+    }
     conn.execute("DELETE FROM annotations WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ------------------------------------------------------------------- sync
+
+/// This install's id, made once. Mixed into annotation uids so two devices
+/// never mint the same one.
+pub fn device_id(conn: &Connection) -> Result<String> {
+    if let Some(id) = get_setting(conn, "device_id")? {
+        return Ok(id);
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = crate::syncdata::new_uid(nanos, std::process::id() as u64, "device");
+    set_setting(conn, "device_id", &id)?;
+    Ok(id)
+}
+
+fn fresh_uid(conn: &Connection) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let salt = device_id(conn).unwrap_or_default();
+    crate::syncdata::new_uid(nanos, COUNTER.fetch_add(1, Ordering::Relaxed), &salt)
+}
+
+/// Give every annotation made before sync existed a uid.
+pub fn backfill_uids(conn: &Connection) -> Result<()> {
+    let ids: Vec<i64> = conn
+        .prepare("SELECT id FROM annotations WHERE uid IS NULL OR uid = ''")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in ids {
+        conn.execute(
+            "UPDATE annotations SET uid = ?2, updated_at = COALESCE(updated_at, created_at) WHERE id = ?1",
+            params![id, fresh_uid(conn)],
+        )?;
+    }
+    Ok(())
+}
+
+/// One local book as sync sees it.
+pub struct SyncRow {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    pub ao3_work_id: Option<i64>,
+    pub content_key: Option<String>,
+    pub position: Option<String>,
+    pub position_at: Option<i64>,
+    pub edited: bool,
+    pub edited_at: Option<i64>,
+}
+
+pub fn sync_rows(conn: &Connection) -> Result<Vec<SyncRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, author, series, series_index, ao3_work_id, content_key,
+                position, COALESCE(position_at, last_opened_at), edited, edited_at
+         FROM books",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SyncRow {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            title: r.get(2)?,
+            author: r.get(3)?,
+            series: r.get(4)?,
+            series_index: r.get(5)?,
+            ao3_work_id: r.get(6)?,
+            content_key: r.get(7)?,
+            position: r.get(8)?,
+            position_at: r.get(9)?,
+            edited: r.get::<_, i64>(10)? != 0,
+            edited_at: r.get(11)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn set_content_key(conn: &Connection, id: i64, key: &str) -> Result<()> {
+    conn.execute("UPDATE books SET content_key = ?2 WHERE id = ?1", params![id, key])?;
+    Ok(())
+}
+
+/// Annotations with their sync fields: (uid, book_id, cfi, excerpt, note,
+/// color, created_at, updated_at).
+pub type SyncAnnotation = (String, i64, String, String, Option<String>, String, i64, i64);
+
+pub fn sync_annotations(conn: &Connection) -> Result<Vec<SyncAnnotation>> {
+    let mut stmt = conn.prepare(
+        "SELECT uid, book_id, cfi, excerpt, note, color, created_at, COALESCE(updated_at, created_at)
+         FROM annotations WHERE uid IS NOT NULL AND uid != ''",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn tombstones(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare("SELECT uid, at FROM sync_tombstones")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Apply a position that came from another device.
+pub fn apply_position(conn: &Connection, id: i64, position: &str, at: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE books SET position = ?2, position_at = ?3 WHERE id = ?1",
+        params![id, position, at],
+    )?;
+    Ok(())
+}
+
+/// Apply hand-edited details that came from another device.
+pub fn apply_details(
+    conn: &Connection,
+    id: i64,
+    d: &crate::syncdata::Details,
+    at: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE books SET title = ?2, author = ?3, series = ?4, series_index = ?5,
+                          edited = 1, edited_at = ?6
+         WHERE id = ?1",
+        params![id, d.title, d.author, d.series, d.series_index, at],
+    )?;
+    Ok(())
+}
+
+/// Insert or update an annotation that came from another device.
+pub fn apply_annotation(
+    conn: &Connection,
+    book_id: i64,
+    uid: &str,
+    a: &crate::syncdata::AnnotationSync,
+) -> Result<()> {
+    let color = if COLORS.contains(&a.color.as_str()) { a.color.as_str() } else { "yellow" };
+    let updated = conn.execute(
+        "UPDATE annotations SET note = ?2, color = ?3, updated_at = ?4
+         WHERE uid = ?1 AND COALESCE(updated_at, 0) < ?4",
+        params![uid, a.note, color, a.updated_at],
+    )?;
+    let exists: bool = conn
+        .query_row("SELECT 1 FROM annotations WHERE uid = ?1", params![uid], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if updated == 0 && !exists {
+        conn.execute(
+            "INSERT INTO annotations(book_id, cfi, excerpt, note, color, created_at, uid, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![book_id, a.cfi, a.excerpt, a.note, color, a.created_at, uid, a.updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+/// Remove annotations deleted elsewhere, and remember the tombstones.
+pub fn apply_tombstones(conn: &Connection, dead: &std::collections::BTreeMap<String, i64>) -> Result<()> {
+    for (uid, at) in dead {
+        conn.execute(
+            "DELETE FROM annotations WHERE uid = ?1 AND COALESCE(updated_at, created_at) <= ?2",
+            params![uid, at],
+        )?;
+        conn.execute(
+            "INSERT INTO sync_tombstones(uid, at) VALUES(?1, ?2)
+             ON CONFLICT(uid) DO UPDATE SET at = MAX(at, excluded.at)",
+            params![uid, at],
+        )?;
+    }
     Ok(())
 }
 
