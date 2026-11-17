@@ -382,7 +382,9 @@ pub fn forget_book(conn: &Connection, id: i64) -> Result<()> {
 // ------------------------------------------------------------ annotations
 
 /// The colours a highlight may have. Anything else becomes yellow.
-pub const COLORS: [&str; 4] = ["yellow", "green", "blue", "pink"];
+/// "bookmark" marks a page bookmark rather than a highlight: its `cfi` is the
+/// position (an EPUB CFI, or "page:N" for comics and PDFs).
+pub const COLORS: [&str; 5] = ["yellow", "green", "blue", "pink", "bookmark"];
 
 fn row_to_annotation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
     Ok(Annotation {

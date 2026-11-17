@@ -32,6 +32,7 @@
             <option value="author">Author</option>
           </select>
           <button id="sort-dir" title="Reverse the order"></button>
+          <button id="lib-layout" title="Grid or list"></button>
           <button id="btn-add-files">Add files…</button>
           <button id="btn-add-folder">Add folder…</button>
         </header>
@@ -58,6 +59,7 @@
             <span id="reader-author" class="reader-author"></span>
           </div>
           <span id="reader-progress" hidden></span>
+          <button id="reader-bookmark" class="icon" title="Bookmark this page">🔖</button>
           <button id="reader-daynight" class="icon" title="Day / night">🌙</button>
           <button id="reader-search" class="icon epub-only" title="Search in this book">🔍</button>
           <button id="reader-more" class="icon" title="More">⋮</button>
@@ -95,6 +97,11 @@
             <button id="panel-back" class="icon" title="Back to where you were" disabled>↶</button>
           </div>
         </div>
+        <!-- Brightness: swipe up or down along the left edge. The page is
+             dimmed by an overlay; the phone's own brightness is untouched. -->
+        <div id="dim-layer"></div>
+        <div id="dim-edge" aria-hidden="true"></div>
+        <div id="dim-label" hidden></div>
         <!-- Shown while text is selected in an EPUB. -->
         <div id="select-bar" hidden>
           <button class="swatch" data-color="yellow" title="Highlight yellow"></button>
@@ -102,6 +109,7 @@
           <button class="swatch" data-color="blue" title="Highlight blue"></button>
           <button class="swatch" data-color="pink" title="Highlight pink"></button>
           <button id="select-note">Note</button>
+          <button id="select-lookup">Look up</button>
           <button id="select-cancel" title="Cancel">✕</button>
         </div>
       </section>
@@ -232,8 +240,27 @@
           </p>
         </div>
 
+        <div class="setting">
+          <h3>Tapping the page</h3>
+          <div class="tabs" role="radiogroup" id="tapzone-picker">
+            <button data-zones="sides" role="radio">Left / right</button>
+            <button data-zones="halves" role="radio">Top / bottom</button>
+            <button data-zones="forward" role="radio">Mostly forward</button>
+          </div>
+          <p class="muted">
+            Left / right: the left side goes back, the right side forward.
+            Top / bottom: the top half goes back, the bottom half forward.
+            Mostly forward: anywhere goes forward except a narrow strip on the
+            left. The middle always opens the menu.
+          </p>
+        </div>
+
         <div class="setting android-only">
           <h3>Reading</h3>
+          <label class="check">
+            <input id="edge-dim" type="checkbox" checked />
+            Swipe up or down the left edge to change brightness
+          </label>
           <label class="check">
             <input id="volume-paging" type="checkbox" checked />
             Volume buttons turn pages while reading
@@ -340,13 +367,42 @@
         <button data-margins="even" role="radio">Even</button>
         <button data-margins="book" role="radio">Book's own</button>
       </div>
-      <p class="muted small">Light, Dark and Sepia are under Settings → Appearance.</p>
+      <p class="muted small sheet-label">Line spacing</p>
+      <div class="tabs" role="radiogroup" id="font-lines">
+        <button data-lines="book" role="radio">Book's</button>
+        <button data-lines="1.3" role="radio">Tight</button>
+        <button data-lines="1.5" role="radio">Normal</button>
+        <button data-lines="1.75" role="radio">Loose</button>
+        <button data-lines="2" role="radio">Double</button>
+      </div>
+      <p class="muted small sheet-label">Space between paragraphs</p>
+      <div class="tabs" role="radiogroup" id="font-paras">
+        <button data-paras="book" role="radio">Book's</button>
+        <button data-paras="0" role="radio">None</button>
+        <button data-paras="0.6" role="radio">Some</button>
+        <button data-paras="1.2" role="radio">More</button>
+      </div>
+      <p class="muted small sheet-label">Alignment</p>
+      <div class="tabs" role="radiogroup" id="font-align">
+        <button data-align="book" role="radio">Book's</button>
+        <button data-align="left" role="radio">Left</button>
+        <button data-align="justify" role="radio">Justified</button>
+      </div>
+      <label class="check sheet-check">
+        <input id="font-hyphens" type="checkbox" /> Hyphenate long words
+      </label>
+      <p class="muted small sheet-label">Layout</p>
+      <div class="tabs" role="radiogroup" id="font-flow">
+        <button data-flow="pages" role="radio">Pages</button>
+        <button data-flow="scroll" role="radio">Scroll</button>
+      </div>
+      <p class="muted small">Light, Paper, Sepia and Dark are under Settings → Appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="more-sheet" class="sheet">
       <button id="reader-aa">Aa  Text size, font and margins</button>
-      <button id="reader-notes">✎  Highlights and notes</button>
+      <button id="reader-notes">🔖  Bookmarks and notes</button>
       <button id="reader-comic">⚙  Reading direction and pages</button>
       <button id="more-settings">Appearance and page turns…</button>
       <button id="more-close">Close</button>
@@ -393,11 +449,15 @@
     </dialog>
 
     <dialog id="notes-sheet" class="sheet">
-      <h3>Highlights and notes</h3>
+      <h3>Bookmarks and notes</h3>
+      <div class="tabs" role="radiogroup" id="notes-order">
+        <button data-order="page" role="radio">By page</button>
+        <button data-order="date" role="radio">By date</button>
+      </div>
       <ul id="notes-list"></ul>
       <p id="notes-empty" class="muted small">
-        Nothing yet. Select some text while reading to highlight it or add a
-        note.
+        Nothing yet. Tap 🔖 to bookmark a page. In a book, select some text to
+        highlight it or add a note.
       </p>
       <div class="row"><button id="notes-done" class="primary">Done</button></div>
     </dialog>

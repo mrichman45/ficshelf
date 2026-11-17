@@ -77,6 +77,48 @@ function applyMotion() {
 }
 applyMotion();
 
+// ------------------------------------------------------------ brightness
+//
+// Swipe up or down along the left edge to dim or brighten the page, as in
+// FBReader. It dims with an overlay rather than the phone's own brightness.
+
+function applyDim() {
+  const d = Math.min(0.85, Math.max(0, Number(pref("dim", "0")) || 0));
+  $("#view-reader").style.setProperty("--dim", String(d));
+  $("#view-reader").classList.toggle("no-edge-dim", pref("edgeDim", "on") !== "on");
+  return d;
+}
+applyDim();
+{
+  const edge = $("#dim-edge");
+  let start = null;
+  let hideLabel = null;
+  edge.addEventListener("touchstart", (e) => {
+    start = { y: e.touches[0].clientY, dim: applyDim() };
+  }, { passive: true });
+  edge.addEventListener("touchmove", (e) => {
+    if (!start) return;
+    e.preventDefault();
+    const h = edge.getBoundingClientRect().height || 1;
+    // Up brightens, down dims.
+    const dim = Math.min(0.85, Math.max(0, start.dim + ((e.touches[0].clientY - start.y) / h) * 0.9));
+    setPref("dim", dim.toFixed(3));
+    applyDim();
+    const label = $("#dim-label");
+    label.textContent = `Brightness ${Math.round((1 - dim / 0.85) * 100)}%`;
+    label.hidden = false;
+    clearTimeout(hideLabel);
+    hideLabel = setTimeout(() => (label.hidden = true), 900);
+  }, { passive: false });
+  edge.addEventListener("touchend", () => (start = null));
+}
+$("#edge-dim").checked = pref("edgeDim", "on") === "on";
+$("#edge-dim").addEventListener("change", (e) => {
+  setPref("edgeDim", e.target.checked ? "on" : "off");
+  if (!e.target.checked) setPref("dim", "0");
+  applyDim();
+});
+
 // How pages turn: slide (default), shift, fade or none.
 function applyTurn() {
   const choice = pref("turn", "slide");
@@ -87,6 +129,20 @@ function applyTurn() {
   });
 }
 applyTurn();
+
+// Tap zones.
+function syncTapZones() {
+  const v = pref("tapZones", "sides");
+  document.querySelectorAll("#tapzone-picker button").forEach((b) => b.classList.toggle("active", b.dataset.zones === v));
+}
+syncTapZones();
+document.querySelectorAll("#tapzone-picker button").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("tapZones", b.dataset.zones);
+    syncTapZones();
+  }),
+);
+
 document.querySelectorAll("[data-turn-choice]").forEach((b) =>
   b.addEventListener("click", () => {
     setPref("turn", b.dataset.turnChoice);
@@ -342,9 +398,16 @@ function seriesCard(name, books) {
   return card;
 }
 
+function syncLibLayout() {
+  const list = pref("libLayout", "grid") === "list";
+  $("#shelf").classList.toggle("list", list);
+  $("#lib-layout").textContent = list ? "▦ Grid" : "☰ List";
+}
+
 function renderShelf() {
   const shelf = $("#shelf");
   shelf.textContent = "";
+  syncLibLayout();
   $("#library-empty").hidden = state.books.length > 0;
   const visible = state.books.filter(matchesFilter);
   if (state.reversed) visible.reverse();
@@ -542,6 +605,11 @@ $("#sort").addEventListener("change", async (e) => {
   await refreshLibrary();
 });
 
+$("#lib-layout").addEventListener("click", () => {
+  setPref("libLayout", pref("libLayout", "grid") === "list" ? "grid" : "list");
+  renderShelf();
+});
+
 $("#sort-dir").addEventListener("click", () => {
   state.reversed = !state.reversed;
   setPref("sortReversed", state.reversed ? "yes" : "no");
@@ -687,6 +755,10 @@ function closeReader() {
   $("#view-reader").classList.remove("kind-epub");
   $("#select-bar").hidden = true;
   $("#view-reader").classList.remove("show-chrome", "has-chapters");
+  if (!notes.rendition) {
+    notes.list = [];
+    notes.book = null;
+  }
   jumpBack = null;
   $("#panel-back").disabled = true;
   $("#panel-where").textContent = "";
@@ -781,6 +853,16 @@ async function openBook(id) {
     if (book.format === "epub") await openEpub(book);
     else if (book.format === "pdf") await openPdf(book);
     else await openCbz(book, pages, rtlHint);
+    // Comics and PDFs have bookmarks too (highlights need text).
+    if (book.format !== "epub") {
+      notes.book = book;
+      try {
+        notes.list = await invoke("list_annotations", { bookId: book.id });
+      } catch {
+        notes.list = [];
+      }
+      syncBookmarkButton();
+    }
   } catch (e) {
     $("#reader-error").hidden = false;
     $("#reader-error").textContent = `Could not open this file: ${e}`;
@@ -796,7 +878,26 @@ function saveWhere(book, position) {
 // Swipe left or right to turn the page; tap the outer thirds to do the same;
 // tap the middle to hide or show the reader's toolbar.
 
-function touchTurner(pageX) {
+/// What a tap at (fx, fy), as fractions of the page, should do, under the
+/// tap-zone scheme chosen in Settings. `rtl` swaps left and right for manga.
+function tapAction(fx, fy, rtl = false) {
+  const inMiddle = fx > 0.3 && fx < 0.7 && fy > 0.3 && fy < 0.7;
+  const scheme = pref("tapZones", "sides");
+  if (scheme === "halves") {
+    if (inMiddle) return "menu";
+    return fy < 0.5 ? "prev" : "next";
+  }
+  const x = rtl ? 1 - fx : fx;
+  if (scheme === "forward") {
+    if (inMiddle) return "menu";
+    return x < 0.15 ? "prev" : "next";
+  }
+  if (x < 0.3) return "prev";
+  if (x > 0.7) return "next";
+  return "menu";
+}
+
+function touchTurner(pageX, pageY = () => 0.5) {
   let start = null;
   return {
     start(e) {
@@ -813,9 +914,9 @@ function touchTurner(pageX) {
       if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
         dx < 0 ? state.reader.next?.() : state.reader.prev?.();
       } else if (quick && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-        const x = pageX(t);
-        if (x < 0.3) state.reader.prev?.();
-        else if (x > 0.7) state.reader.next?.();
+        const act = tapAction(pageX(t), pageY(t));
+        if (act === "prev") state.reader.prev?.();
+        else if (act === "next") state.reader.next?.();
         else $("#view-reader").classList.toggle("show-chrome");
       }
     },
@@ -823,12 +924,35 @@ function touchTurner(pageX) {
 }
 
 // For the PDF and comic readers, which draw straight into the page.
-const stageTouch = touchTurner((t) => t.clientX / window.innerWidth);
+const stageTouch = touchTurner(
+  (t) => t.clientX / window.innerWidth,
+  (t) => t.clientY / window.innerHeight,
+);
 $("#reader-stage").addEventListener("touchstart", (e) => stageTouch.start(e), { passive: true });
 $("#reader-stage").addEventListener("touchend", (e) => {
   // EPUBs get touches through epub.js, comics through their own gesture
   // handling; this is for PDFs.
   if (state.reader && state.reader.kind === "pdf") stageTouch.end(e);
+});
+
+// A mouse wheel turns pages, as in FBReader on the desktop. One turn per
+// flick, however many notches it sends. Ctrl+wheel is left for zooming
+// comics, and a scrolling EPUB scrolls.
+let wheelAt = 0;
+function wheelTurn(e) {
+  if (e.ctrlKey || !state.reader) return;
+  if (state.reader.kind === "epub" && pref("flow", "pages") === "scroll") return;
+  const now = Date.now();
+  if (now - wheelAt < 350) return;
+  if (Math.abs(e.deltaY) < 4 && Math.abs(e.deltaX) < 4) return;
+  wheelAt = now;
+  const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+  d > 0 ? state.reader.next?.() : state.reader.prev?.();
+}
+$("#reader-stage").addEventListener("wheel", (e) => {
+  // Comics zoomed in use the wheel to pan; the comic reader handles ctrl.
+  if (state.reader?.kind === "cbz" && $("#cbz-zoom").style.transform) return;
+  wheelTurn(e);
 });
 
 // Unfolding the Fold, or rotating a phone, changes the page size.
@@ -891,19 +1015,42 @@ const EVEN_MARGINS_CSS = `
     padding-left: 0 !important; padding-right: 0 !important;
   }`;
 
+/// The reader's text-layout choices as CSS for inside an EPUB page:
+/// margins, line spacing, paragraph spacing, alignment and hyphenation.
+/// Each "Book's" choice adds nothing, leaving the publisher's style.
+function textLayoutCss() {
+  const css = [];
+  if (pref("margins", "even") === "even") css.push(EVEN_MARGINS_CSS);
+  const lines = pref("lines", "book");
+  if (lines !== "book") {
+    css.push(`body, p, div, li, blockquote, span { line-height: ${Number(lines) || 1.5} !important; }`);
+  }
+  const paras = pref("paras", "book");
+  if (paras !== "book") {
+    css.push(`p { margin-top: 0 !important; margin-bottom: ${Number(paras) || 0}em !important; }`);
+  }
+  const align = pref("align", "book");
+  if (align === "left" || align === "justify") {
+    css.push(`p, div, li, blockquote { text-align: ${align} !important; }`);
+  }
+  if (pref("hyphens", "off") === "on") {
+    css.push(`html, body, p { -webkit-hyphens: auto !important; hyphens: auto !important; }`);
+  }
+  return css.join("\n");
+}
+
 function applyMargins(contents) {
   const doc = contents?.document;
   if (!doc?.head) return;
-  const even = pref("margins", "even") === "even";
-  let style = doc.getElementById("ficshelf-margins");
-  if (even && !style) {
+  // Hyphenation needs to know the language; most books say, some do not.
+  if (!doc.documentElement.getAttribute("lang")) doc.documentElement.setAttribute("lang", "en");
+  let style = doc.getElementById("ficshelf-layout");
+  if (!style) {
     style = doc.createElement("style");
-    style.id = "ficshelf-margins";
-    style.textContent = EVEN_MARGINS_CSS;
+    style.id = "ficshelf-layout";
     doc.head.appendChild(style);
-  } else if (!even && style) {
-    style.remove();
   }
+  style.textContent = textLayoutCss();
 }
 
 function fontSize() {
@@ -942,7 +1089,7 @@ const notes = {
 
 function drawHighlight(a) {
   const r = notes.rendition;
-  if (!r) return;
+  if (!r || a.color === "bookmark") return;
   r.annotations.remove(a.cfi, "highlight");
   r.annotations.highlight(a.cfi, { id: a.id }, () => openNoteSheet(a), "ficshelf-hl", highlightStyle(a.color));
 }
@@ -983,6 +1130,11 @@ document.querySelectorAll("#select-bar .swatch").forEach((b) =>
 );
 $("#select-note").addEventListener("click", () => addHighlight("yellow", true));
 $("#select-cancel").addEventListener("click", clearSelection);
+$("#select-lookup").addEventListener("click", () => {
+  const word = (notes.selection?.text || "").trim().split(/\s+/).slice(0, 4).join(" ");
+  clearSelection();
+  if (word) call("look_up", { word }).catch(() => {});
+});
 
 function openNoteSheet(a) {
   notes.editing = { ...a };
@@ -1034,16 +1186,44 @@ $("#note-delete").addEventListener("click", async () => {
   $("#note-sheet").close();
 });
 
-$("#reader-notes").addEventListener("click", () => {
+function notesOrderKey(a) {
+  if (a.cfi.startsWith("page:")) return Number(a.cfi.slice(5)) || 0;
+  return null; // EPUB positions are compared as CFIs
+}
+
+function renderNotesList() {
   const list = $("#notes-list");
   list.textContent = "";
-  $("#notes-empty").hidden = notes.list.length > 0;
-  for (const a of notes.list) {
+  const items = [...notes.list];
+  const byDate = pref("notesOrder", "page") === "date";
+  document.querySelectorAll("#notes-order button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.order === (byDate ? "date" : "page")),
+  );
+  if (byDate) {
+    items.sort((a, b) => b.created_at - a.created_at);
+  } else {
+    const cmp = new ePub.CFI();
+    items.sort((a, b) => {
+      const ka = notesOrderKey(a);
+      const kb = notesOrderKey(b);
+      if (ka != null && kb != null) return ka - kb;
+      try {
+        return cmp.compare(a.cfi, b.cfi);
+      } catch {
+        return a.created_at - b.created_at;
+      }
+    });
+  }
+  $("#notes-empty").hidden = items.length > 0;
+  for (const a of items) {
     const li = document.createElement("li");
-    li.style.setProperty("--c", HIGHLIGHT[a.color] || HIGHLIGHT.yellow);
+    const bm = a.color === "bookmark";
+    li.classList.toggle("bm", bm);
+    if (!bm) li.style.setProperty("--c", HIGHLIGHT[a.color] || HIGHLIGHT.yellow);
     const ex = document.createElement("div");
     ex.className = "ex";
-    ex.textContent = a.excerpt.length > 220 ? `${a.excerpt.slice(0, 220)}…` : a.excerpt;
+    const text = a.excerpt.length > 220 ? `${a.excerpt.slice(0, 220)}…` : a.excerpt;
+    ex.textContent = bm ? `🔖 ${text}` : text;
     li.appendChild(ex);
     if (a.note) {
       const nt = document.createElement("div");
@@ -1053,12 +1233,93 @@ $("#reader-notes").addEventListener("click", () => {
     }
     li.addEventListener("click", () => {
       $("#notes-sheet").close();
-      notes.rendition?.display(a.cfi);
+      const target = a.cfi.startsWith("page:") ? Number(a.cfi.slice(5)) : a.cfi;
+      jumpFrom(() => state.reader?.restore?.(target));
     });
     list.appendChild(li);
   }
+}
+
+$("#reader-notes").addEventListener("click", () => {
+  renderNotesList();
   $("#notes-sheet").showModal();
 });
+document.querySelectorAll("#notes-order button").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("notesOrder", b.dataset.order);
+    renderNotesList();
+  }),
+);
+
+// ------------------------------------------------------------- bookmarks
+
+/// The position a bookmark records: an EPUB CFI, or "page:N".
+function bookmarkKey() {
+  const m = state.reader?.mark?.();
+  if (m == null) return null;
+  return typeof m === "number" ? `page:${m}` : m;
+}
+
+/// The bookmark on the page being read, if any. An EPUB bookmark counts
+/// when it falls anywhere on the visible page.
+function bookmarkHere() {
+  const r = state.reader;
+  if (!r) return null;
+  const marks = notes.list.filter((a) => a.color === "bookmark");
+  if (r.kind === "epub") {
+    const range = notes.range;
+    if (!range) return null;
+    const cmp = new ePub.CFI();
+    return (
+      marks.find((a) => {
+        try {
+          return cmp.compare(a.cfi, range.start) >= 0 && cmp.compare(a.cfi, range.end) <= 0;
+        } catch {
+          return a.cfi === range.start;
+        }
+      }) || null
+    );
+  }
+  const key = bookmarkKey();
+  return marks.find((a) => a.cfi === key) || null;
+}
+
+function syncBookmarkButton() {
+  const on = Boolean(bookmarkHere());
+  $("#reader-bookmark").style.opacity = on ? "1" : "0.55";
+  $("#reader-bookmark").title = on ? "Remove this bookmark" : "Bookmark this page";
+}
+
+$("#reader-bookmark").addEventListener("click", async () => {
+  const r = state.reader;
+  if (!r) return;
+  const existing = bookmarkHere();
+  try {
+    if (existing) {
+      await call("delete_annotation", { id: existing.id });
+      notes.list = notes.list.filter((a) => a.id !== existing.id);
+      toast("Bookmark removed.");
+    } else {
+      const key = bookmarkKey();
+      if (!key) return;
+      const chapter = r.chapterLabel?.() || "";
+      const excerpt = [`Page ${r.current?.() ?? ""}`, chapter].filter(Boolean).join(" · ");
+      const a = await call("add_annotation", {
+        bookId: r.book.id,
+        cfi: key,
+        excerpt,
+        note: null,
+        color: "bookmark",
+      });
+      notes.list.push(a);
+      toast("Bookmarked.");
+    }
+  } catch {
+    /* the toast from call() says why */
+  }
+  syncBookmarkButton();
+});
+
 $("#notes-done").addEventListener("click", () => $("#notes-sheet").close());
 
 // ---------------------------------------------------------------- chapters
@@ -1132,7 +1393,48 @@ function syncFontSheet() {
   document.querySelectorAll("#font-margins button").forEach((b) =>
     b.classList.toggle("active", b.dataset.margins === margins),
   );
+  const pick = (sel, key, attr, fallback) => {
+    const v = pref(key, fallback);
+    document.querySelectorAll(`${sel} button`).forEach((b) => b.classList.toggle("active", b.dataset[attr] === v));
+  };
+  pick("#font-lines", "lines", "lines", "book");
+  pick("#font-paras", "paras", "paras", "book");
+  pick("#font-align", "align", "align", "book");
+  pick("#font-flow", "flow", "flow", "pages");
+  $("#font-hyphens").checked = pref("hyphens", "off") === "on";
 }
+
+for (const [sel, key, attr] of [
+  ["#font-lines", "lines", "lines"],
+  ["#font-paras", "paras", "paras"],
+  ["#font-align", "align", "align"],
+]) {
+  document.querySelectorAll(`${sel} button`).forEach((b) =>
+    b.addEventListener("click", () => {
+      setPref(key, b.dataset[attr]);
+      syncFontSheet();
+      readerRestyle?.();
+    }),
+  );
+}
+$("#font-hyphens").addEventListener("change", (e) => {
+  setPref("hyphens", e.target.checked ? "on" : "off");
+  readerRestyle?.();
+});
+// Pages or one continuous scroll. epub.js lays these out differently, so
+// the book is reopened (at the same place) to switch.
+document.querySelectorAll("#font-flow button").forEach((b) =>
+  b.addEventListener("click", () => {
+    if (pref("flow", "pages") === b.dataset.flow) return;
+    setPref("flow", b.dataset.flow);
+    syncFontSheet();
+    const id = state.reader?.book?.id;
+    if (id != null) {
+      $("#font-sheet").close();
+      openBook(id);
+    }
+  }),
+);
 
 document.querySelectorAll("#font-margins button").forEach((b) =>
   b.addEventListener("click", () => {
@@ -1234,13 +1536,16 @@ async function openEpub(book) {
   console.info(`[epub] read ${bytes.byteLength} bytes in ${since()}`);
   const epub = ePub(bytes, { openAs: "binary" });
   epub.opened.then(() => console.info(`[epub] unpacked in ${since()}`)).catch(() => {});
+  const scrolling = pref("flow", "pages") === "scroll";
   const rendition = epub.renderTo(area, {
     width,
     height,
-    flow: "paginated",
+    // Pages, or one continuous scroll through the whole book.
+    flow: scrolling ? "scrolled" : "paginated",
+    manager: scrolling ? "continuous" : "default",
     // Two pages side by side only when there is room for them, such as the
     // Fold's inner screen in landscape; one page on a phone.
-    spread: width >= 800 ? "auto" : "none",
+    spread: !scrolling && width >= 800 ? "auto" : "none",
     minSpreadWidth: 800,
     // Without this, epub.js sandboxes each page so strictly that recent
     // Chromium (Android's webview included) runs none of its own layout or
@@ -1265,7 +1570,10 @@ async function openEpub(book) {
   });
 
   $("#view-reader").classList.add("kind-epub");
-  rendition.hooks.content.register((contents) => applyMargins(contents));
+  rendition.hooks.content.register((contents) => {
+    applyMargins(contents);
+    contents.window?.addEventListener("wheel", wheelTurn, { passive: true });
+  });
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
   // reading area's size; keep the book matched to it. The watcher starts
@@ -1330,7 +1638,10 @@ async function openEpub(book) {
   // The book lives in an iframe, so its touches arrive through epub.js
   // rather than the page. screenX is used because the iframe's own
   // coordinates span every page of the chapter, not just the visible one.
-  const turner = touchTurner((t) => t.screenX / window.screen.width);
+  const turner = touchTurner(
+    (t) => t.screenX / window.screen.width,
+    (t) => t.screenY / window.screen.height,
+  );
   rendition.on("touchstart", (e) => turner.start(e));
   rendition.on("touchend", (e) => {
     // Lifting a finger after selecting text must not also turn the page.
@@ -1459,6 +1770,8 @@ async function openEpub(book) {
     }
     here = location.start.cfi;
     notes.href = location.start.href;
+    notes.range = { start: location.start.cfi, end: location.end?.cfi || location.start.cfi };
+    syncBookmarkButton();
     saveWhere(book, here);
     showEpubPage();
   });
@@ -1520,6 +1833,7 @@ async function openEpub(book) {
       notes.book = null;
       notes.epub = null;
       notes.href = null;
+      notes.range = null;
       notes.list = [];
       $("#view-reader").classList.remove("kind-epub");
       rendition.destroy();
@@ -1600,6 +1914,7 @@ function setFooterTicks(fractions) {
 
 /// `label` overrides the plain "n/total", for a two-page spread.
 function showPageNumber(n, total, label) {
+  queueMicrotask(syncBookmarkButton);
   footer.page = label || `${n}/${total}`;
   $("#foot-fill").style.width = `${total ? Math.min(100, (n / total) * 100) : 0}%`;
   renderFooter();
@@ -1674,7 +1989,7 @@ function syncDayNight() {
 $("#reader-more").addEventListener("click", () => {
   const kind = state.reader?.kind;
   $("#reader-aa").hidden = kind !== "epub";
-  $("#reader-notes").hidden = kind !== "epub";
+  $("#reader-notes").hidden = !kind;
   $("#reader-comic").hidden = kind !== "cbz";
   $("#more-sheet").showModal();
 });
@@ -2065,9 +2380,10 @@ async function openCbz(book, pages, rtlHint) {
 
     // Edge taps turn at once; a middle tap waits a moment in case it is the
     // first of a double-tap, then shows or hides the toolbar.
-    if (scale === 1 && (fx < 0.3 || fx > 0.7)) {
-      const forward = rtl ? fx < 0.3 : fx > 0.7;
-      forward ? next() : prev();
+    const fy = (e.clientY - r.top) / r.height;
+    const act = tapAction(fx, fy, rtl);
+    if (scale === 1 && act !== "menu") {
+      act === "next" ? next() : prev();
       lastTap = null;
       return;
     }

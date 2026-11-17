@@ -40,6 +40,14 @@ back.
 a serif or sans font; **Settings → Appearance** chooses System, Light, Dark or
 Sepia for the app and the page alike.
 
+**Reading like FBReader** — books open full screen; a middle tap brings
+the menu over the page (chapters, title, day/night, search, bookmarks, a
+chapter-and-page panel with a slider and jump-back). A status line shows
+progress, page, time and battery. Swipe the left edge to dim. Text layout
+(spacing, alignment, hyphenation), pages or continuous scroll, tap zones
+(left/right, top/bottom, mostly forward) and page-turn style are all
+settings. Select a word and Look up opens its Wiktionary entry.
+
 **Highlights and notes** — select text in an EPUB to highlight it in one of
 four colours or attach a note. The **✎** button lists them; tap one to jump
 there. They are kept per book in the library database and removed with it.

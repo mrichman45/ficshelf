@@ -587,6 +587,25 @@ fn open_externally(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -
         .map_err(|e| format!("no app on this computer would open it: {e}"))
 }
 
+/// Open a word's dictionary entry (Wiktionary) in the browser. The URL is
+/// built here, so the front end cannot ask for anything but a dictionary
+/// page.
+#[tauri::command]
+fn look_up(app: tauri::AppHandle, word: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let word: String = word.trim().chars().take(80).collect();
+    if word.is_empty() {
+        return Err("select a word first".into());
+    }
+    let url = format!(
+        "https://en.wiktionary.org/wiki/{}",
+        percent_encoding::utf8_percent_encode(&word.replace(' ', "_"), percent_encoding::NON_ALPHANUMERIC)
+    );
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("could not open the dictionary: {e}"))
+}
+
 #[tauri::command]
 fn forget_book(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(err)?;
@@ -1042,6 +1061,7 @@ pub fn run() {
             update_metadata,
             forget_book,
             open_externally,
+            look_up,
             list_annotations,
             add_annotation,
             update_annotation,

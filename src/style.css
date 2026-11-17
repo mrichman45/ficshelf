@@ -824,3 +824,79 @@ html:not(.android) #view-reader .bar .desktop-only { font-size: 14px; }
 #search-results li { padding: 9px 6px; border-bottom: 1px solid var(--line); cursor: pointer; font-family: var(--serif); font-size: 14px; line-height: 1.45; }
 #search-results li:last-child { border-bottom: none; }
 #search-results mark { background: color-mix(in srgb, #f5d33c 55%, transparent); color: inherit; padding: 0 1px; }
+
+/* ------------------------------------------------------------ 0.4.0 */
+
+/* Brightness: an overlay over the page, adjusted from the left edge. */
+#dim-layer {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: var(--dim, 0);
+  pointer-events: none;
+  z-index: 9;
+}
+#dim-edge {
+  position: absolute;
+  left: 0;
+  top: 15%;
+  bottom: 15%;
+  width: 24px;
+  z-index: 10;
+  touch-action: none;
+}
+html:not(.android) #dim-edge,
+#view-reader.no-edge-dim #dim-edge { display: none; }
+#dim-label:not([hidden]) {
+  position: absolute;
+  left: 36px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 13;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 14px;
+  pointer-events: none;
+}
+
+#font-lines button, #font-paras button, #font-align button, #font-flow button { flex: 1; padding-left: 4px; padding-right: 4px; }
+#font-lines, #font-paras, #font-align, #font-flow { margin-bottom: 6px; }
+.sheet-check { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; }
+#font-sheet { max-height: 88vh; overflow: auto; }
+#notes-order { margin-bottom: 8px; }
+#notes-order button { flex: 1; }
+#notes-list li.bm { border-left-color: var(--accent); }
+#notes-list li.bm .ex { font-family: inherit; font-size: 14px; }
+#tapzone-picker button { flex: 1; }
+
+/* Library list view: a row per book with a small cover. */
+.shelf.list { display: flex; flex-direction: column; gap: 6px; }
+.shelf.list .card {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  align-items: center;
+  height: 78px;
+  aspect-ratio: auto;
+}
+.shelf.list .card .cover,
+.shelf.list .card .placeholder {
+  grid-row: 1;
+  grid-column: 1;
+  width: 52px;
+  height: 78px;
+  aspect-ratio: auto;
+  padding: 0;
+  font-size: 0;
+}
+.shelf.list .card .meta {
+  grid-row: 1;
+  grid-column: 2;
+  padding: 0 44px 0 12px;
+}
+.shelf.list .card .badge, .shelf.list .card .num { top: 8px; right: 8px; }
+.shelf.list .card .count { bottom: 8px; right: 8px; }
+.shelf.list .card .meta .t { font-size: 15px; white-space: normal; }
+.shelf.list .card .meta .a { color: var(--ink-dim); }
+.shelf.list .card .fmt { position: absolute; right: 8px; bottom: 8px; top: auto; left: auto; }
