@@ -12,6 +12,11 @@ name: build
 # GitHub Release with every file attached and labelled.
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a release for the version in package.json"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -170,12 +175,17 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A pushed v* tag, or a hand-started run with "release" ticked (which
+    # tags the commit itself, for when a tag cannot be pushed from where you
+    # are).
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     needs: [desktop, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -183,8 +193,14 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
         run: |
+          if [[ "$REF" == refs/tags/v* ]]; then
+            TAG="$REF_NAME"
+          else
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
           cat > notes.md <<'EOF'
           ## Which file do I want?
 
@@ -200,6 +216,6 @@ jobs:
           **Android**
           - `FicShelf_…_android-arm64.apk`: Galaxy and other 64-bit ARM phones. Open it on the phone and allow installing from this source when asked.
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "FicShelf $TAG" --notes-file notes.md \
             dist/FicShelf-Windows/* dist/FicShelf-Linux/* dist/FicShelf-Android/*
