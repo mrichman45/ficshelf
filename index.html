@@ -47,17 +47,21 @@
 
       <!-- -------------------------------------------------- Reader -->
       <section id="view-reader" class="view">
+        <!-- The tap menu, after FBReader: a bar at the top and a panel at the
+             bottom that slide in over the page together. -->
         <header class="bar">
-          <button id="reader-back">← Library</button>
-          <span id="reader-title" class="reader-title"></span>
-          <span class="spacer"></span>
-          <span id="reader-progress" class="muted"></span>
-          <button id="reader-toc" class="epub-only" title="Chapters">☰</button>
-          <button id="reader-notes" class="epub-only" title="Highlights and notes">✎</button>
-          <button id="reader-aa" class="epub-only" title="Text size and font">Aa</button>
-          <button id="reader-comic" class="cbz-only" title="Reading direction and layout">⚙</button>
-          <button id="reader-prev">Previous</button>
-          <button id="reader-next">Next</button>
+          <button id="reader-back" class="icon" title="Back to the library">←</button>
+          <button id="reader-toc" class="icon has-chapters" title="Chapters">☰</button>
+          <div class="reader-titles">
+            <span id="reader-title" class="reader-title"></span>
+            <span id="reader-author" class="reader-author"></span>
+          </div>
+          <span id="reader-progress" hidden></span>
+          <button id="reader-daynight" class="icon" title="Day / night">🌙</button>
+          <button id="reader-search" class="icon epub-only" title="Search in this book">🔍</button>
+          <button id="reader-more" class="icon" title="More">⋮</button>
+          <button id="reader-prev" class="desktop-only">‹ Page</button>
+          <button id="reader-next" class="desktop-only">Page ›</button>
         </header>
         <div id="reader-stage" class="stage">
           <div id="epub-area" hidden></div>
@@ -79,9 +83,16 @@
           <span id="foot-track"><span id="foot-fill"></span><span id="foot-ticks"></span></span>
           <span id="foot-text"></span>
         </button>
-        <div id="page-scrub" hidden>
-          <input id="page-range" type="range" min="1" max="1" step="1" />
-          <span id="page-range-label"></span>
+        <div id="reader-panel">
+          <div class="panel-row">
+            <button id="chap-prev" class="icon has-chapters" title="Previous chapter">‹</button>
+            <span id="panel-where"></span>
+            <button id="chap-next" class="icon has-chapters" title="Next chapter">›</button>
+          </div>
+          <div class="panel-row">
+            <input id="page-range" type="range" min="1" max="1" step="1" aria-label="Page" />
+            <button id="panel-back" class="icon" title="Back to where you were" disabled>↶</button>
+          </div>
         </div>
         <!-- Shown while text is selected in an EPUB. -->
         <div id="select-bar" hidden>
@@ -330,6 +341,24 @@
       </div>
       <p class="muted small">Light, Dark and Sepia are under Settings → Appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="more-sheet" class="sheet">
+      <button id="reader-aa">Aa  Text size, font and margins</button>
+      <button id="reader-notes">✎  Highlights and notes</button>
+      <button id="reader-comic">⚙  Reading direction and pages</button>
+      <button id="more-settings">Appearance and page turns…</button>
+      <button id="more-close">Close</button>
+    </dialog>
+
+    <dialog id="search-sheet" class="sheet">
+      <form id="search-form" method="dialog">
+        <input id="book-search" type="search" placeholder="Search in this book…" />
+        <button type="submit" class="primary">Search</button>
+      </form>
+      <p id="search-status" class="muted small"></p>
+      <ul id="search-results"></ul>
+      <div class="row"><button id="search-done">Done</button></div>
     </dialog>
 
     <dialog id="toc-sheet" class="sheet">

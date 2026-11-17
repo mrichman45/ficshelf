@@ -647,15 +647,16 @@ function closeReader() {
   setVolumePaging(false);
   $("#view-reader").classList.remove("kind-epub");
   $("#select-bar").hidden = true;
-  $("#page-scrub").hidden = true;
-  $("#view-reader").classList.remove("show-chrome");
+  $("#view-reader").classList.remove("show-chrome", "has-chapters");
+  jumpBack = null;
+  $("#panel-back").disabled = true;
+  $("#panel-where").textContent = "";
   stopFooterClock();
   $("#epub-area").hidden = true;
   $("#epub-area").textContent = "";
   $("#pdf-canvas").hidden = true;
   $("#cbz-view").hidden = true;
   $("#view-reader").classList.remove("kind-cbz");
-  $("#page-scrub").hidden = true;
   $("#reader-error").hidden = true;
 }
 
@@ -733,6 +734,8 @@ async function openBook(id) {
   setVolumePaging(true);
   if (!history.state?.reader) history.pushState({ reader: true }, "");
   $("#reader-title").textContent = book.title;
+  $("#reader-author").textContent = book.author || "";
+  syncDayNight();
   $("#reader-progress").textContent = "";
 
   try {
@@ -1058,17 +1061,18 @@ $("#reader-toc").addEventListener("click", async () => {
     // works FicShelf packages itself); mark the last one at or before the
     // reading position by order instead, when the file alone cannot tell.
     const sameFile = toc.filter((t) => sameChapter(t.href, notes.href));
+    const currentHref = state.reader?.currentChapterHref?.();
     for (const t of toc) {
       const li = document.createElement("li");
       li.textContent = t.label;
       li.style.setProperty("--depth", String(Math.min(t.depth, 4)));
-      if (sameFile.length === 1 && sameFile[0] === t) {
+      if (currentHref ? t.href === currentHref : sameFile.length === 1 && sameFile[0] === t) {
         li.classList.add("current");
         currentEl = li;
       }
       li.addEventListener("click", () => {
         $("#toc-sheet").close();
-        notes.rendition?.display(t.href);
+        jumpFrom(() => notes.rendition?.display(t.href));
       });
       list.appendChild(li);
     }
@@ -1175,6 +1179,7 @@ async function openEpub(book) {
   const t0 = performance.now();
   const since = () => `${Math.round(performance.now() - t0)} ms`;
   $("#reader-progress").textContent = "Opening…";
+  $("#panel-where").textContent = "Opening…";
   const slowNote = setTimeout(() => {
     $("#reader-progress").textContent = "Still opening…";
     toast("Still opening; a large book can take a moment the first time.");
@@ -1319,6 +1324,66 @@ async function openEpub(book) {
     $("#select-bar").hidden = false;
   });
 
+  // Chapters, resolved to exact positions. A table-of-contents entry points
+  // at a file and maybe an anchor in it; turning each into a CFI lets every
+  // book (including AO3 works packaged as a single file) know which chapter
+  // is being read, jump to the next or previous one, and mark chapters on
+  // the progress line. Worked out in the background after opening.
+  const cfiCompare = new ePub.CFI();
+  let chapters = []; // { label, href, cfi }
+  const chapterIndex = () => {
+    if (!here || !chapters.length) return -1;
+    let found = -1;
+    for (let i = 0; i < chapters.length; i++) {
+      try {
+        if (cfiCompare.compare(chapters[i].cfi, here) <= 0) found = i;
+      } catch {
+        /* an entry whose position could not be compared */
+      }
+    }
+    return found;
+  };
+  const resolveChapters = async () => {
+    const nav = await epub.loaded.navigation;
+    const toc = flattenToc(nav?.toc);
+    const out = [];
+    for (const t of toc) {
+      try {
+        const [file, frag] = (t.href || "").split("#");
+        const section = epub.spine.get(t.href) || epub.spine.get(file);
+        if (!section) continue;
+        await section.load(epub.load.bind(epub));
+        const doc = section.document;
+        const el = (frag && doc?.getElementById(frag)) || doc?.querySelector("body");
+        if (!el) continue;
+        out.push({ label: t.label, href: t.href, cfi: section.cfiFromElement(el) });
+      } catch {
+        /* skip an entry that does not resolve */
+      }
+    }
+    out.sort((a, b) => {
+      try {
+        return cfiCompare.compare(a.cfi, b.cfi);
+      } catch {
+        return 0;
+      }
+    });
+    return out;
+  };
+  const markChapters = () => {
+    if (chapters.length < 2 || !epub.locations?.length?.()) return;
+    setFooterTicks(chapters.map((c) => epub.locations.percentageFromCfi(c.cfi)));
+  };
+  resolveChapters()
+    .then((list) => {
+      if (state.reader?.book?.id !== book.id) return;
+      chapters = list;
+      $("#view-reader").classList.toggle("has-chapters", chapters.length > 1);
+      markChapters();
+      renderPanelWhere();
+    })
+    .catch(() => {});
+
   // Page numbers. An EPUB has no fixed pages: its text reflows to fit the
   // screen and the font size. epub.js "locations" divide the book into
   // page-sized pieces once, so page 123 stays page 123 whatever the text
@@ -1342,6 +1407,7 @@ async function openEpub(book) {
       $("#reader-progress").textContent = text;
       footer.page = text;
       renderFooter();
+      renderPanelWhere();
     }
   };
 
@@ -1371,6 +1437,35 @@ async function openEpub(book) {
     },
     total: () => locTotal(),
     current: () => (here && locOf(here)) || 1,
+    mark: () => here,
+    restore: (cfi) => cfi && rendition.display(cfi),
+    chapterLabel: () => chapters[chapterIndex()]?.label || "",
+    chapterAt: (href) => chapters.findIndex((c) => c.href === href),
+    currentChapterHref: () => chapters[chapterIndex()]?.href || null,
+    chapter: (step) => {
+      if (!chapters.length) return;
+      const i = chapterIndex();
+      const j = Math.min(Math.max(i + step, 0), chapters.length - 1);
+      // "Previous" from part-way into a chapter goes to its start first.
+      const target = step < 0 && i >= 0 && chapters[i].cfi !== here ? i : j;
+      return rendition.display(chapters[target].cfi);
+    },
+    search: async (q) => {
+      const found = [];
+      for (const item of epub.spine.spineItems) {
+        if (found.length >= 200) break;
+        try {
+          await item.load(epub.load.bind(epub));
+          for (const r of item.find(q)) {
+            found.push(r);
+            if (found.length >= 200) break;
+          }
+        } catch {
+          /* a section that cannot be searched */
+        }
+      }
+      return found;
+    },
     goTo: (n) => {
       const cfi = epub.locations?.cfiFromLocation?.(Math.max(0, Math.round(n) - 1));
       if (cfi) rendition.display(cfi);
@@ -1400,22 +1495,7 @@ async function openEpub(book) {
     .then(() => {
       if (state.reader?.book?.id !== book.id) return;
       showEpubPage();
-      // A mark where each section of the book begins, as FBReader shows.
-      try {
-        const all = epub.locations._locations || [];
-        const marks = [];
-        let last = -1;
-        all.forEach((cfi, i) => {
-          const spine = new ePub.CFI(cfi).spinePos;
-          if (spine !== last) {
-            if (i > 0) marks.push(i / all.length);
-            last = spine;
-          }
-        });
-        setFooterTicks(marks);
-      } catch {
-        /* no marks; the line still shows progress */
-      }
+      markChapters();
     })
     .catch(() => {});
 }
@@ -1484,30 +1564,135 @@ function showPageNumber(n, total, label) {
   footer.page = label || `${n}/${total}`;
   $("#foot-fill").style.width = `${total ? Math.min(100, (n / total) * 100) : 0}%`;
   renderFooter();
-  if (!$("#page-scrub").hidden) syncScrub(n, total);
-}
-
-function syncScrub(n, total) {
   const range = $("#page-range");
-  range.max = String(total);
-  range.value = String(n);
-  $("#page-range-label").textContent = `${n} / ${total}`;
+  range.max = String(Math.max(total, 1));
+  if (document.activeElement !== range) range.value = String(n);
+  renderPanelWhere();
 }
 
-// Tap the page number for a slider; let go to jump there.
-$("#reader-footer").addEventListener("click", () => {
-  const r = state.reader;
-  if (!r?.goTo || !r.total?.()) return;
-  const scrub = $("#page-scrub");
-  scrub.hidden = !scrub.hidden;
-  if (!scrub.hidden) syncScrub(r.current(), r.total());
+/// The middle of the tap menu's bottom panel: "3/249  Chapter title".
+function renderPanelWhere(previewPage) {
+  const chapter = state.reader?.chapterLabel?.() || "";
+  const page = previewPage ? `${previewPage}/${$("#page-range").max}` : footer.page;
+  $("#panel-where").textContent = [page, chapter].filter(Boolean).join("  ");
+}
+
+// The footer, like the middle of the page, opens the tap menu.
+$("#reader-footer").addEventListener("click", () => $("#view-reader").classList.toggle("show-chrome"));
+
+$("#page-range").addEventListener("input", (e) => renderPanelWhere(e.target.value));
+
+// ------------------------------------------------------------- jump back
+//
+// Any jump (slider, chapter list, ‹ ›, search) remembers where she was, and
+// ↶ returns there, as in FBReader.
+
+let jumpBack = null;
+
+function jumpFrom(go) {
+  const mark = state.reader?.mark?.();
+  if (mark != null) {
+    jumpBack = mark;
+    $("#panel-back").disabled = false;
+  }
+  return go();
+}
+
+$("#panel-back").addEventListener("click", () => {
+  if (jumpBack == null || !state.reader?.restore) return;
+  const back = jumpBack;
+  jumpFrom(() => state.reader.restore(back));
 });
-$("#page-range").addEventListener("input", (e) => {
-  $("#page-range-label").textContent = `${e.target.value} / ${e.target.max}`;
-});
+
 $("#page-range").addEventListener("change", (e) => {
-  state.reader?.goTo?.(Number(e.target.value));
-  $("#page-scrub").hidden = true;
+  const n = Number(e.target.value);
+  jumpFrom(() => state.reader?.goTo?.(n));
+});
+
+// ‹ › in the panel: previous and next chapter.
+$("#chap-prev").addEventListener("click", () => jumpFrom(() => state.reader?.chapter?.(-1)));
+$("#chap-next").addEventListener("click", () => jumpFrom(() => state.reader?.chapter?.(1)));
+
+// ------------------------------------------------------------- day/night
+
+$("#reader-daynight").addEventListener("click", () => {
+  if (effectiveTheme() === "dark") {
+    setPref("theme", pref("dayTheme", "paper"));
+  } else {
+    setPref("dayTheme", effectiveTheme());
+    setPref("theme", "dark");
+  }
+  applyTheme();
+  syncDayNight();
+});
+
+function syncDayNight() {
+  $("#reader-daynight").textContent = effectiveTheme() === "dark" ? "☀" : "🌙";
+}
+
+// ------------------------------------------------------------ ⋮ menu
+
+$("#reader-more").addEventListener("click", () => {
+  const kind = state.reader?.kind;
+  $("#reader-aa").hidden = kind !== "epub";
+  $("#reader-notes").hidden = kind !== "epub";
+  $("#reader-comic").hidden = kind !== "cbz";
+  $("#more-sheet").showModal();
+});
+for (const id of ["#reader-aa", "#reader-notes", "#reader-comic"]) {
+  $(id).addEventListener("click", () => $("#more-sheet").close());
+}
+$("#more-settings").addEventListener("click", () => {
+  $("#more-sheet").close();
+  leaveReader();
+  setTimeout(() => show("settings"), 0);
+});
+$("#more-close").addEventListener("click", () => $("#more-sheet").close());
+
+// --------------------------------------------------------------- search
+
+$("#reader-search").addEventListener("click", () => {
+  $("#search-sheet").showModal();
+  $("#book-search").focus();
+});
+$("#search-done").addEventListener("click", () => $("#search-sheet").close());
+$("#search-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#book-search").value.trim();
+  const list = $("#search-results");
+  list.textContent = "";
+  if (!q || !state.reader?.search) return;
+  $("#search-status").textContent = "Searching…";
+  let results = [];
+  try {
+    results = await state.reader.search(q);
+  } catch (err) {
+    $("#search-status").textContent = `Search failed: ${err?.message || err}`;
+    return;
+  }
+  $("#search-status").textContent = results.length
+    ? `${results.length}${results.length >= 200 ? "+" : ""} found.`
+    : "Not found in this book.";
+  const needle = q.toLowerCase();
+  for (const r of results) {
+    const li = document.createElement("li");
+    // Show the excerpt with the match marked, built from text nodes only.
+    const text = r.excerpt || "";
+    const at = text.toLowerCase().indexOf(needle);
+    if (at >= 0) {
+      li.append(text.slice(0, at));
+      const m = document.createElement("mark");
+      m.textContent = text.slice(at, at + q.length);
+      li.append(m, text.slice(at + q.length));
+    } else {
+      li.textContent = text;
+    }
+    li.addEventListener("click", () => {
+      $("#search-sheet").close();
+      jumpFrom(() => state.reader?.restore?.(r.cfi));
+    });
+    list.appendChild(li);
+  }
 });
 
 async function openPdf(book) {
@@ -1575,6 +1760,11 @@ async function openPdf(book) {
     resize: () => render(),
     total: () => doc.numPages,
     current: () => page,
+    mark: () => page,
+    restore: (p) => {
+      page = Math.min(Math.max(Number(p) || 1, 1), doc.numPages);
+      render();
+    },
     goTo: (n) => {
       page = Math.min(Math.max(Math.round(n), 1), doc.numPages);
       render();
@@ -1898,6 +2088,11 @@ async function openCbz(book, pages, rtlHint) {
     prev,
     total: () => pages.length,
     current: () => index + 1,
+    mark: () => index + 1,
+    restore: (n) => {
+      index = Math.min(Math.max(Math.round(Number(n)) - 1, 0), pages.length - 1);
+      render();
+    },
     goTo: (n) => {
       index = Math.min(Math.max(Math.round(n) - 1, 0), pages.length - 1);
       render();

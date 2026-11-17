@@ -760,3 +760,67 @@ html[data-turn="fade"] .turn-from-left { animation: fade-in 0.22s ease-out; }
 html[data-turn="none"] .turn-from-right,
 html[data-turn="none"] .turn-from-left { animation: none; }
 #reader-stage { overflow: hidden; }
+
+/* ------------------------------------------------- tap menu (FBReader) */
+
+#view-reader .bar {
+  flex-wrap: nowrap;
+  gap: 4px;
+  background: var(--chrome, #15304f);
+  color: #fff;
+  border-bottom: none;
+}
+#view-reader .bar button { background: transparent; border: none; color: #fff; }
+#view-reader .bar button.icon { min-width: 40px; font-size: 20px; justify-content: center; }
+.reader-titles { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.reader-titles .reader-title {
+  font-weight: 600;
+  font-size: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reader-author { font-size: 13px; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html:not(.android) #view-reader .bar .desktop-only { font-size: 14px; }
+
+#reader-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  z-index: 12;
+  padding: 6px 12px 10px;
+  background: var(--chrome-2, #2f3442);
+  color: #fff;
+  transform: translateY(calc(100% + 30px));
+  transition: transform 0.2s var(--ease, ease-out);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.25);
+}
+#view-reader.show-chrome #reader-panel { transform: none; }
+.panel-row { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+#reader-panel button { background: transparent; border: none; color: #fff; min-width: 40px; font-size: 22px; }
+#reader-panel button:disabled { opacity: 0.35; }
+#panel-where {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#page-range { flex: 1; accent-color: #0aa2b4; min-height: 0; padding: 0; background: transparent; border: none; }
+/* Books without chapters (comics, PDFs, single-chapter works). */
+#view-reader:not(.has-chapters) .has-chapters { visibility: hidden; }
+#view-reader:not(.has-chapters) #reader-toc { display: none; }
+
+#more-sheet[open] { display: flex; flex-direction: column; gap: 8px; }
+#more-sheet button { text-align: left; }
+#more-sheet button[hidden] { display: none; }
+
+#search-form { display: flex; gap: 8px; }
+#book-search { flex: 1; min-width: 0; }
+#search-results { list-style: none; margin: 8px 0 0; padding: 0; max-height: 55vh; overflow: auto; }
+#search-results li { padding: 9px 6px; border-bottom: 1px solid var(--line); cursor: pointer; font-family: var(--serif); font-size: 14px; line-height: 1.45; }
+#search-results li:last-child { border-bottom: none; }
+#search-results mark { background: color-mix(in srgb, #f5d33c 55%, transparent); color: inherit; padding: 0 1px; }
