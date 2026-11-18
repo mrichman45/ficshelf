@@ -1051,20 +1051,25 @@ const PAGE_THEMES = {
 const GRAIN_URL =
   "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.3 0 0 0 0 0.2 0 0 0 0.11 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")";
 
-function registerPageThemes(rendition) {
-  for (const [name, t] of Object.entries(PAGE_THEMES)) {
-    const imp = t.force ? " !important" : "";
-    rendition.themes.register(name, {
-      body: {
-        background: `${t.grain ? `${GRAIN_URL} ` : ""}${t.bg}${imp}`,
-        color: `${t.ink}${imp}`,
-      },
-      "p, div, span, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, em, strong, i, b": t.force
-        ? { color: "inherit !important", "background-color": "transparent !important" }
-        : {},
-      a: { color: `${t.link}${imp}` },
-    });
+/// The page colours for the current theme as CSS for inside an EPUB page.
+/// They live in FicShelf's own style element, rewritten on every change,
+/// rather than in epub.js themes: epub.js adds each theme's stylesheet on
+/// first use and never takes it out again, so after Night mode its
+/// "!important" colours kept overriding Day mode.
+function pageThemeCss() {
+  const t = PAGE_THEMES[effectiveTheme()] || PAGE_THEMES.light;
+  const imp = t.force ? " !important" : "";
+  const css = [
+    `body { background: ${t.grain ? `${GRAIN_URL} ` : ""}${t.bg}${imp}; color: ${t.ink}${imp}; }`,
+    `a { color: ${t.link}${imp}; }`,
+  ];
+  if (t.force) {
+    css.push(
+      "p, div, span, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, em, strong, i, b " +
+        "{ color: inherit !important; background-color: transparent !important; }",
+    );
   }
+  return css.join("\n");
 }
 
 const FONT_SIZES = [70, 80, 90, 100, 110, 120, 135, 150, 170, 200];
@@ -1121,7 +1126,7 @@ function applyMargins(contents) {
     style.id = "ficshelf-layout";
     doc.head.appendChild(style);
   }
-  style.textContent = textLayoutCss();
+  style.textContent = `${pageThemeCss()}\n${textLayoutCss()}`;
 }
 
 function fontSize() {
@@ -1130,7 +1135,6 @@ function fontSize() {
 }
 
 function applyPageStyle(rendition) {
-  rendition.themes.select(effectiveTheme());
   rendition.themes.fontSize(`${fontSize()}%`);
   rendition.themes.font(FACES[pref("fontFace", "book")] ?? "");
   for (const c of rendition.getContents()) applyMargins(c);
@@ -1693,7 +1697,6 @@ async function openEpub(book) {
   // Page colours and fonts go on after the book is showing, so that if one
   // of them misbehaves the book is still readable.
   try {
-    registerPageThemes(rendition);
     applyPageStyle(rendition);
     readerRestyle = () => {
       try {
@@ -1935,7 +1938,7 @@ const footer = { page: "", battery: null, clock: null, batteryHooked: false };
 
 function renderFooter() {
   const now = new Date();
-  const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const time = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
   const bits = [footer.page, time];
   if (footer.battery != null) bits.push(`${footer.battery}%`);
   $("#foot-text").textContent = bits.filter(Boolean).join("   ");
