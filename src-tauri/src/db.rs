@@ -134,6 +134,15 @@ fn add_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Point a book at a converted copy of its file.
+pub fn set_path_format(conn: &Connection, id: i64, path: &str, format: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE books SET path = ?2, format = ?3, content_key = NULL WHERE id = ?1",
+        params![id, path, format],
+    )?;
+    Ok(())
+}
+
 pub fn watch_folder(conn: &Connection, path: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO watched_folders(path, added_at) VALUES(?1, ?2) ON CONFLICT(path) DO NOTHING",

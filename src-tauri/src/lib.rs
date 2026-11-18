@@ -13,6 +13,8 @@ mod backup;
 mod cooldown;
 mod thumb;
 mod lookup;
+mod convert;
+mod mobi;
 mod creds;
 mod db;
 mod epubgen;
@@ -80,6 +82,10 @@ pub struct UpdateReport {
 // ---------------------------------------------------------------- helpers
 
 fn format_of(path: &Path) -> Option<&'static str> {
+    // A folder of page images is a comic too.
+    if path.is_dir() {
+        return archive::is_image_folder(path).then_some("cbz");
+    }
     util::kind_of_ext(&path.extension()?.to_string_lossy())
 }
 
@@ -149,6 +155,23 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
                 series = info.series;
                 series_index = info.number;
             }
+        }
+        "mobi" => {
+            // A Kindle book: its own title and author, and its first image
+            // as the cover. It is turned into EPUB when opened.
+            if let Ok(bytes) = std::fs::read(path) {
+                match mobi::parse(&bytes) {
+                    Ok(b) => {
+                        if !b.title.trim().is_empty() {
+                            title = b.title;
+                        }
+                        author = b.author;
+                    }
+                    Err(mobi::MobiError::Encrypted) => drm = Some("Kindle DRM"),
+                    Err(_) => {}
+                }
+            }
+            cover = convert::mobi_cover(path);
         }
         "audio" => {
             // A podfic: the tags give the title, the reader (as author) and
@@ -589,7 +612,9 @@ fn collect_files(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>, depth: usi
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if recursive {
+            if archive::is_image_folder(&path) {
+                out.push(path); // a comic kept as a folder of pages
+            } else if recursive {
                 collect_files(&path, recursive, out, depth + 1);
             }
         } else if format_of(&path).is_some() {
@@ -644,8 +669,79 @@ async fn book_bytes(state: State<'_, AppState>, id: i64) -> Result<tauri::ipc::R
             .ok_or_else(|| "that book is not in the library".to_string())?
             .path
     };
+    // Kindle books are read as the EPUB they convert to, made once and kept
+    // until the file changes.
+    if util::kind_of_ext(Path::new(&path).extension().map(|e| e.to_string_lossy()).as_deref().unwrap_or("")) == Some("mobi") {
+        let bytes = converted_mobi(&state, id, Path::new(&path))?;
+        return Ok(tauri::ipc::Response::new(bytes));
+    }
     let bytes = std::fs::read(&path).map_err(|e| format!("could not read the book: {e}"))?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn converted_mobi(state: &AppState, id: i64, path: &Path) -> Result<Vec<u8>, String> {
+    let stamp = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache = { state.library_dir.lock().map_err(err)?.join(".converted") };
+    let cached = cache.join(format!("{id}-{stamp}.epub"));
+    if let Ok(bytes) = std::fs::read(&cached) {
+        return Ok(bytes);
+    }
+    let (epub, _, _) = convert::mobi_to_epub(path).map_err(chain)?;
+    if std::fs::create_dir_all(&cache).is_ok() {
+        // Older conversions of this book go.
+        if let Ok(entries) = std::fs::read_dir(&cache) {
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&format!("{id}-")) {
+                    std::fs::remove_file(e.path()).ok();
+                }
+            }
+        }
+        std::fs::write(&cached, &epub).ok();
+    }
+    Ok(epub)
+}
+
+/// Convert a book to a format every reader handles: a Kindle book to
+/// EPUB, a comic in RAR, 7-Zip or a folder to CBZ. The new file goes in
+/// the downloads folder under Converted, and the library entry moves to
+/// it, keeping its place, notes and marks. The original is not touched.
+#[tauri::command]
+async fn convert_book(app: tauri::AppHandle, id: i64) -> Result<db::Book, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (book, dir) = {
+            let conn = state.conn.lock().map_err(err)?;
+            let book = db::get_book(&conn, id).map_err(chain)?.ok_or("that book is not in the library")?;
+            (book, state.library_dir.lock().map_err(err)?.join("Converted"))
+        };
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        let src = PathBuf::from(&book.path);
+        let stem = util::safe_filename(&book.title, "Converted");
+        let (dest, format) = match book.format.as_str() {
+            "mobi" => {
+                let (epub, _, _) = convert::mobi_to_epub(&src).map_err(chain)?;
+                let dest = import_destination(&dir, &stem, "epub", epub.len() as u64);
+                std::fs::write(&dest, epub).map_err(err)?;
+                (dest, "epub")
+            }
+            "cbz" if archive::container(&src) != archive::Container::Zip => {
+                let dest = import_destination(&dir, &stem, "cbz", 0);
+                archive::write_cbz(&src, &dest).map_err(chain)?;
+                (dest, "cbz")
+            }
+            _ => return Err("that book is already in a format every reader opens".to_string()),
+        };
+        let conn = state.conn.lock().map_err(err)?;
+        db::set_path_format(&conn, id, &dest.to_string_lossy(), format).map_err(chain)?;
+        db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
@@ -2118,6 +2214,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            convert_book,
             lookup_book,
             apply_lookup,
             find_duplicates,

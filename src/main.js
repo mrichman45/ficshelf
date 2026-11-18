@@ -599,7 +599,7 @@ function bookCard(book, { showNumber = false } = {}) {
 
   const fmt = document.createElement("span");
   fmt.className = "fmt";
-  fmt.textContent = book.format === "audio" ? "🎧 podfic" : book.format;
+  fmt.textContent = formatLabel(book);
   card.appendChild(fmt);
 
   if (book.drm) {
@@ -746,9 +746,27 @@ async function openLocked(book) {
 
 let menuBook = null;
 
+const ZIP_COMIC = /\.(cbz|zip)$/i;
+
+/// What the little label on a cover says: the file's own kind.
+function formatLabel(book) {
+  if (book.format === "audio") return "🎧 podfic";
+  if (book.format === "cbz") {
+    const ext = (book.path.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+    if (!ext || !["cbz", "zip", "cbr", "rar", "cb7", "7z"].includes(ext)) return "pages";
+    return ext === "zip" ? "cbz" : ext === "rar" ? "cbr" : ext === "7z" ? "cb7" : ext;
+  }
+  if (book.format === "mobi") return (book.path.match(/\.(azw3?|prc)$/i) || [])[1]?.toLowerCase() || "mobi";
+  return book.format;
+}
+
 function openBookMenu(book) {
   menuBook = book;
   $("#book-menu-title").textContent = book.title;
+  const convertible = book.format === "mobi" || (book.format === "cbz" && !ZIP_COMIC.test(book.path));
+  $("#book-menu-convert").hidden = !convertible || Boolean(book.drm);
+  $("#book-menu-convert").textContent = book.format === "mobi" ? "Convert to EPUB" : "Convert to CBZ";
+  $("#book-menu-finished").textContent = readStatus(book) === "finished" ? "Mark as unread" : "Mark as finished";
   $("#book-menu").showModal();
 }
 
@@ -869,6 +887,25 @@ $("#book-menu-finished").addEventListener("click", async () => {
   await call("set_marks", { id: book.id, tags: book.tags || [], rating: book.rating ?? null, status: done ? "unread" : "finished" });
   await refreshLibrary();
   toast(done ? "Marked as unread." : "Marked as finished.");
+});
+
+$("#book-menu-convert").addEventListener("click", async () => {
+  $("#book-menu").close();
+  const book = menuBook;
+  if (!book) return;
+  $("#task-title").textContent = `Converting ${book.title}…`;
+  $("#task-amount").textContent = "";
+  busy($("#task-panel"), true);
+  try {
+    const done = await invoke("convert_book", { id: book.id });
+    await refreshLibrary();
+    toast(`Converted. It's now ${done.format.toUpperCase()}, kept in Converted in your downloads folder; the original is untouched.`);
+  } catch (e) {
+    logError(`convert (${book.path})`, e);
+    toast(`Could not convert it: ${e}`, true, false);
+  } finally {
+    busy($("#task-panel"), false);
+  }
 });
 
 // -------------------------------------------------------- library menu
@@ -1234,7 +1271,7 @@ async function addFiles() {
       : [
           {
             name: "Books, comics and podfics",
-            extensions: ["epub", "pdf", "cbz", "zip", ...AUDIO_EXTS],
+            extensions: ["epub", "pdf", "cbz", "zip", "cbr", "rar", "cb7", "7z", "mobi", "azw3", "azw", "prc", ...AUDIO_EXTS],
           },
         ],
   });
@@ -1590,11 +1627,12 @@ async function openBook(id) {
   $("#reader-progress").textContent = "";
 
   try {
-    if (book.format === "epub") await openEpub(book);
+    // Kindle books arrive converted to EPUB (see book_bytes).
+    if (book.format === "epub" || book.format === "mobi") await openEpub(book);
     else if (book.format === "pdf") await openPdf(book);
     else await openCbz(book, pages, rtlHint);
     // Comics and PDFs have bookmarks too (highlights need text).
-    if (book.format !== "epub") {
+    if (book.format !== "epub" && book.format !== "mobi") {
       notes.book = book;
       try {
         notes.list = await invoke("list_annotations", { bookId: book.id });

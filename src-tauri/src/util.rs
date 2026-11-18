@@ -189,6 +189,16 @@ pub fn sniff_format(bytes: &[u8], name_hint: &str) -> Option<&'static str> {
         }
         return Some(ext);
     }
+    let hint_ext = name_hint.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    if bytes.starts_with(b"Rar!\x1a\x07") {
+        return Some("cbr");
+    }
+    if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        return Some("cb7");
+    }
+    if bytes.get(60..68) == Some(b"BOOKMOBI".as_slice()) {
+        return Some(if hint_ext == "azw3" { "azw3" } else { "mobi" });
+    }
     if bytes.starts_with(b"%PDF") {
         return Some("pdf");
     }
@@ -243,7 +253,10 @@ pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
     match ext.to_ascii_lowercase().as_str() {
         "epub" => Some("epub"),
         "pdf" => Some("pdf"),
-        "cbz" | "zip" => Some("cbz"),
+        // Comics in any container read the same way.
+        "cbz" | "zip" | "cbr" | "rar" | "cb7" | "7z" => Some("cbz"),
+        // Kindle books, turned into EPUB for the reader.
+        "mobi" | "azw3" | "azw" | "prc" => Some("mobi"),
         other => audio_ext(other).map(|_| "audio"),
     }
 }
@@ -496,5 +509,17 @@ mod audio_sniff_tests {
         assert!(!version_newer("1.0.0", "1.0.0"));
         assert!(!version_newer("0.9.9", "1.0.0"));
         assert!(!version_newer("1.0.0-beta", "1.0.0"));
+    }
+
+    #[test]
+    fn sniffs_more_formats() {
+        assert_eq!(sniff_format(b"Rar!\x1a\x07\x01\x00", "x.cbr"), Some("cbr"));
+        assert_eq!(sniff_format(b"7z\xbc\xaf\x27\x1c\x00\x04", ""), Some("cb7"));
+        let mut mobi = vec![0u8; 80];
+        mobi[60..68].copy_from_slice(b"BOOKMOBI");
+        assert_eq!(sniff_format(&mobi, "book.azw3"), Some("azw3"));
+        assert_eq!(sniff_format(&mobi, "book.mobi"), Some("mobi"));
+        assert_eq!(kind_of_ext("CBR"), Some("cbz"));
+        assert_eq!(kind_of_ext("azw3"), Some("mobi"));
     }
 }

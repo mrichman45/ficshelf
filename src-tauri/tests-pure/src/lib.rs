@@ -15,3 +15,5 @@ pub mod syncdata;
 pub mod audiometa;
 #[path = "../../src/cooldown.rs"]
 pub mod cooldown;
+#[path = "../../src/mobi.rs"]
+pub mod mobi;

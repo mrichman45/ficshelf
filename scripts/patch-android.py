@@ -210,7 +210,7 @@ MEMBERS = f"""
 
   // Books, comics and podfic audio.
   private val ficshelfImportable = setOf(
-    "epub", "pdf", "cbz", "zip",
+    "epub", "pdf", "cbz", "zip", "cbr", "rar", "cb7", "7z", "mobi", "azw3", "azw", "prc",
     "mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "wav")
 
   private fun ficshelfListTree(tree: Uri, parentId: String, folder: String, depth: Int, out: JSONArray) {{

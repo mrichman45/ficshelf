@@ -797,7 +797,7 @@ fn epub_from_ao3_html(html: &str, meta: &WorkMeta) -> Result<Vec<u8>> {
 /// Serialise an element's children as XHTML: void elements self-closed,
 /// everything escaped, scripts and anything with an unwritable name left
 /// out.
-fn write_xhtml_children(el: ElementRef<'_>, out: &mut String, chapters: &mut Vec<(String, String)>) {
+pub(crate) fn write_xhtml_children(el: ElementRef<'_>, out: &mut String, chapters: &mut Vec<(String, String)>) {
     use crate::epubgen as g;
     for child in el.children() {
         if let Some(t) = child.value().as_text() {
