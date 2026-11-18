@@ -123,16 +123,66 @@ pub struct Ao3Client {
     logged_in: Arc<Mutex<bool>>,
     /// The account name AO3 greeted us with, for `/users/<name>/...` pages.
     account: Arc<Mutex<Option<String>>>,
+    /// Backing off after AO3 says "slow down" or "overloaded"; kept in a
+    /// file so closing the app does not skip the wait.
+    cooldown: Arc<std::sync::Mutex<crate::cooldown::Cooldown>>,
+    cooldown_file: Arc<Option<std::path::PathBuf>>,
 }
 
 impl Ao3Client {
-    pub fn new() -> Result<Self> {
+    pub fn new(cooldown_file: Option<std::path::PathBuf>) -> Result<Self> {
+        let cooldown = cooldown_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .map(|line| crate::cooldown::Cooldown::from_line(&line))
+            .unwrap_or_default();
         Ok(Self {
             http: Arc::new(std::sync::RwLock::new(build_http()?)),
             last_request: Arc::new(Mutex::new(None)),
             logged_in: Arc::new(Mutex::new(false)),
             account: Arc::new(Mutex::new(None)),
+            cooldown: Arc::new(std::sync::Mutex::new(cooldown)),
+            cooldown_file: Arc::new(cooldown_file),
         })
+    }
+
+    /// Seconds left in a cooldown and what caused it (429 or 503), if any.
+    pub fn cooldown_left(&self) -> Option<(i64, u16)> {
+        let c = self.cooldown.lock().unwrap_or_else(|p| p.into_inner());
+        c.remaining(crate::db::now()).map(|s| (s, c.reason))
+    }
+
+    /// The message for a request refused because of a cooldown, or None.
+    fn cooling(&self) -> Option<String> {
+        let (left, reason) = self.cooldown_left()?;
+        let wait = crate::cooldown::describe(left);
+        Some(if reason == 503 {
+            format!("AO3 is overloaded, so FicShelf is giving it {wait} before asking again.")
+        } else {
+            format!("AO3 asked FicShelf to slow down, so AO3 requests are paused for {wait}.")
+        })
+    }
+
+    /// Note AO3's answer; a 429 or 503 starts a cooldown. Returns the
+    /// message to show if it did.
+    fn note(&self, resp: &reqwest::Response) -> Option<String> {
+        let status = resp.status().as_u16();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::cooldown::parse_retry_after);
+        let started = {
+            let mut c = self.cooldown.lock().unwrap_or_else(|p| p.into_inner());
+            let started = c.answered(crate::db::now(), status, retry_after);
+            if started {
+                if let Some(f) = self.cooldown_file.as_ref() {
+                    std::fs::write(f, c.to_line()).ok();
+                }
+            }
+            started
+        };
+        if started { self.cooling() } else { None }
     }
 
     /// A handle to the current client. `reqwest::Client` is a cheap,
@@ -172,6 +222,9 @@ impl Ao3Client {
 
         let (status, body) = {
             let _slot = self.slot().await;
+            if let Some(m) = self.cooling() {
+                return Err(anyhow!(m));
+            }
             let resp = self
                 .http()
                 .post(p::login_url())
@@ -185,13 +238,12 @@ impl Ao3Client {
                 .send()
                 .await
                 .context("sending the login request")?;
+            if let Some(m) = self.note(&resp) {
+                return Err(anyhow!(m));
+            }
             let status = resp.status();
             (status, resp.text().await.unwrap_or_default())
         };
-
-        if status.as_u16() == 429 {
-            return Err(anyhow!("AO3 asked us to slow down. Wait a few minutes, then try again."));
-        }
 
         // AO3 answers a bad login with the form again plus an error message,
         // at the same status code as success, so the body is what tells us.
@@ -268,18 +320,23 @@ impl Ao3Client {
     }
 
     async fn get_text(&self, url: &str) -> Result<String> {
+        if let Some(m) = self.cooling() {
+            return Err(anyhow!(m));
+        }
         let _slot = self.slot().await;
+        // Another request may have started a cooldown while this one waited.
+        if let Some(m) = self.cooling() {
+            return Err(anyhow!(m));
+        }
         let resp = self
             .get_once_more(url)
             .await
             .with_context(|| format!("requesting {url}"))?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Err(anyhow!(
-                "AO3 asked us to slow down (429). Wait a few minutes before trying again."
-            ));
+        if let Some(m) = self.note(&resp) {
+            return Err(anyhow!(m));
         }
+        let status = resp.status();
         if status.as_u16() == 404 {
             return Err(anyhow!("That work does not exist, or has been deleted."));
         }
@@ -367,9 +424,7 @@ impl Ao3Client {
             Ok(bytes) => Ok(bytes),
             // 429 means slow down; answering it with another request would be
             // exactly wrong.
-            Err(DownloadError::SlowDown) => {
-                Err(anyhow!("AO3 asked us to slow down (429). Try again shortly."))
-            }
+            Err(DownloadError::SlowDown(m)) => Err(anyhow!(m)),
             // Anything else: AO3 may have EPUB downloads switched off (it did
             // after its November 2026 outage). Its own HTML download of the
             // same work is the fallback, packaged into an EPUB here. Still
@@ -384,9 +439,7 @@ impl Ao3Client {
                 match self.fetch_download(&html_url, meta.work_id).await {
                     Ok(html) => epub_from_ao3_html(&String::from_utf8_lossy(&html), meta)
                         .context("packaging AO3's HTML download as an EPUB"),
-                    Err(DownloadError::SlowDown) => {
-                        Err(anyhow!("AO3 asked us to slow down (429). Try again shortly."))
-                    }
+                    Err(DownloadError::SlowDown(m)) => Err(anyhow!(m)),
                     Err(DownloadError::Failed(html_err)) => Err(anyhow!(
                         "AO3 would not provide this work for download ({epub_err}; HTML: {html_err})"
                     )),
@@ -397,16 +450,25 @@ impl Ao3Client {
 
     /// One paced download request, size-limited.
     async fn fetch_download(&self, url: &str, work_id: i64) -> std::result::Result<Vec<u8>, DownloadError> {
+        if let Some(m) = self.cooling() {
+            return Err(DownloadError::SlowDown(m));
+        }
         let _slot = self.slot().await;
+        if let Some(m) = self.cooling() {
+            return Err(DownloadError::SlowDown(m));
+        }
         let resp = self
             .get_once_more(url)
             .await
             .map_err(|e| DownloadError::Failed(format!("could not reach AO3: {e}")))?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Err(DownloadError::SlowDown);
+        // 429 and 503 start a cooldown, and are not answered with the HTML
+        // fallback: another request to a server that just said "slow down"
+        // or "overloaded" would be exactly wrong.
+        if let Some(m) = self.note(&resp) {
+            return Err(DownloadError::SlowDown(m));
         }
+        let status = resp.status();
         if !status.is_success() {
             return Err(DownloadError::Failed(format!(
                 "AO3 returned {status} when downloading work {work_id}"
@@ -649,7 +711,8 @@ fn page_audio(doc: &Html) -> Vec<String> {
 }
 
 enum DownloadError {
-    SlowDown,
+    /// AO3 said slow down or overloaded, or a cooldown is running.
+    SlowDown(String),
     Failed(String),
 }
 

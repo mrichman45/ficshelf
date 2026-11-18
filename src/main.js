@@ -279,11 +279,53 @@ async function call(cmd, args) {
   try {
     return await invoke(cmd, args);
   } catch (e) {
+    if (cmd.startsWith("ao3_")) refreshCooldown();
     const msg = typeof e === "string" ? e : String(e);
     logError(describeCall(cmd, args), msg);
     toast(msg, true, false);
     throw e;
   }
+}
+
+// ------------------------------------------------------------- cooldown
+//
+// When AO3 says "slow down" (429) or "overloaded" (503), the Rust side stops
+// every AO3 request for a while. The AO3 screens show how long, and their
+// buttons wait.
+
+const AO3_VIEWS = ["search", "bookmarks", "updates"];
+const cooldown = { until: 0, reason: 0, timer: null };
+
+async function refreshCooldown() {
+  let c = null;
+  try {
+    c = await invoke("ao3_cooldown");
+  } catch {
+    /* older build: no cooldown */
+  }
+  cooldown.until = c ? Date.now() + c.seconds * 1000 : 0;
+  cooldown.reason = c ? c.reason : 0;
+  renderCooldown();
+}
+
+function renderCooldown() {
+  const left = Math.max(0, Math.ceil((cooldown.until - Date.now()) / 1000));
+  const onAo3 = AO3_VIEWS.includes(window.__view);
+  const banner = document.getElementById("ao3-cooldown");
+  if (!banner) return;
+  banner.hidden = !(left > 0 && onAo3);
+  const m = Math.floor(left / 60);
+  const sec = String(left % 60).padStart(2, "0");
+  document.getElementById("ao3-cooldown-text").textContent =
+    cooldown.reason === 503
+      ? `AO3 is overloaded. Trying again is paused for ${m}:${sec}.`
+      : `AO3 asked FicShelf to slow down. Searching and saving are paused for ${m}:${sec}.`;
+  for (const id of ["btn-ao3-search", "btn-search-more"]) {
+    const b = document.getElementById(id);
+    if (b) b.disabled = left > 0;
+  }
+  clearTimeout(cooldown.timer);
+  if (left > 0) cooldown.timer = setTimeout(renderCooldown, 1000);
 }
 
 /// A short, readable note of what a command was trying to do, for the log.
@@ -326,6 +368,7 @@ function show(view) {
   if (current) $("#nav-current").textContent = current.firstChild?.textContent?.trim() || "";
   setNavMenu(false);
   window.__view = view; // for the error log: which screen she was on
+  refreshCooldown();
   if (view === "settings") renderLog();
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
 }

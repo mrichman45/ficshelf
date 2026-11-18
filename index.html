@@ -21,6 +21,12 @@
     </nav>
     <div id="nav-scrim" hidden></div>
 
+    <!-- Shown on the AO3 screens while FicShelf is backing off. -->
+    <div id="ao3-cooldown" class="cooldown" role="status" hidden>
+      <strong>Giving AO3 a break</strong>
+      <span id="ao3-cooldown-text"></span>
+    </div>
+
     <main>
       <!-- ------------------------------------------------- Library -->
       <section id="view-library" class="view active">
@@ -398,7 +404,9 @@
             one you would click on the page, one at a time with a pause in
             between. It keeps nothing but your own copies on your own disk and
             serves nothing to anyone else. Works restricted to registered users
-            need you to be signed in above.
+            need you to be signed in above. If AO3 ever says to slow down or
+            that it is overloaded, FicShelf stops asking for a while (5 minutes,
+            longer if it happens again) and shows how long on the AO3 screens.
           </p>
         </div>
 

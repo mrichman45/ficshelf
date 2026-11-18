@@ -1116,3 +1116,20 @@ html[data-motion="off"] .indeterminate .busy-fill { left: 0; width: 100% !import
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
 }
+
+/* ------------------------------------------------------------ cooldown */
+
+.cooldown {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cooldown[hidden] { display: none; }
+.cooldown span { color: var(--ink-dim); font-variant-numeric: tabular-nums; }

@@ -215,6 +215,12 @@ This matters more than the features, so it is written down rather than assumed.
   it as an EPUB locally. Still AO3's Download link, never scraped chapters.
 - **Metadata is read from a work's first page**, not the full-work view, so a
   check never makes AO3 render a whole novel to report a chapter count.
+- **It backs off when AO3 says so.** A 429 ("slow down") pauses every AO3
+  request for 5 minutes (or AO3's Retry-After, if longer), a 503
+  ("overloaded") for 1 minute; another within the hour doubles the wait, up
+  to 30 and 10 minutes. The pause survives restarting the app, and the AO3
+  screens count it down. Neither answer is ever retried, and a 503 on a
+  download does not fall back to the HTML download.
 - **The user agent identifies the app honestly**, so AO3 can recognise and
   block it specifically if they ever wish to.
 - **Nothing is cached, re-hosted or shared.** Downloads go to your folder and

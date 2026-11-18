@@ -10,6 +10,7 @@ mod ao3_parse;
 mod archive;
 mod audiometa;
 mod backup;
+mod cooldown;
 mod creds;
 mod db;
 mod epubgen;
@@ -1339,6 +1340,19 @@ fn set_phone_storage(app: tauri::AppHandle, state: State<'_, AppState>, choice: 
     Ok(path)
 }
 
+/// How long AO3 requests are paused for, if they are: seconds left and
+/// whether AO3 said "slow down" (429) or "overloaded" (503).
+#[derive(Serialize)]
+struct Ao3Cooldown {
+    seconds: i64,
+    reason: u16,
+}
+
+#[tauri::command]
+fn ao3_cooldown(state: State<'_, AppState>) -> Option<Ao3Cooldown> {
+    state.ao3.cooldown_left().map(|(seconds, reason)| Ao3Cooldown { seconds, reason })
+}
+
 // ---------------------------------------------------------------- backup
 
 /// Make a backup. `dest` is where to write it (from a save dialog); on a
@@ -1439,7 +1453,7 @@ pub fn run() {
 
             app.manage(AppState {
                 conn: Mutex::new(conn),
-                ao3: ao3::Ao3Client::new()?,
+                ao3: ao3::Ao3Client::new(Some(data_dir.join("ao3-cooldown")))?,
                 sync: sync::SyncState::default(),
                 library_dir: Mutex::new(library_dir),
             });
@@ -1448,6 +1462,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            ao3_cooldown,
             backup_make,
             backup_restore,
             set_phone_storage,
