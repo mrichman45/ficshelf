@@ -3569,8 +3569,18 @@ function skip(sec) {
   a.addEventListener("error", () => {
     if (!listen.book) return;
     $("#listen-error").hidden = false;
-    $("#listen-error").textContent =
-      "This file could not be played. It may be in a format this device does not support.";
+    const code = a.error?.code;
+    const why =
+      code === 4
+        ? "it could not be loaded, or is in a format this device does not support"
+        : code === 3
+          ? "the file seems to be damaged"
+          : code === 2
+            ? "it could not be read"
+            : "something went wrong";
+    $("#listen-error").textContent = `This file could not be played: ${why} (error ${code ?? "?"}${
+      a.error?.message ? `, ${a.error.message}` : ""
+    }).`;
   });
 
   $("#listen-play").addEventListener("click", togglePlay);
