@@ -38,8 +38,23 @@ pub struct BookSync {
     pub position: Option<Stamped<String>>,
     #[cfg_attr(not(nodeps), serde(default))]
     pub details: Option<Stamped<Details>>,
+    /// Her tags, rating and read status.
+    #[cfg_attr(not(nodeps), serde(default))]
+    pub marks: Option<Stamped<Marks>>,
     #[cfg_attr(not(nodeps), serde(default))]
     pub annotations: BTreeMap<String, AnnotationSync>,
+}
+
+/// What she has marked a book with.
+#[cfg_attr(not(nodeps), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Marks {
+    #[cfg_attr(not(nodeps), serde(default))]
+    pub tags: Vec<String>,
+    #[cfg_attr(not(nodeps), serde(default))]
+    pub rating: Option<u8>,
+    #[cfg_attr(not(nodeps), serde(default))]
+    pub status: Option<String>,
 }
 
 /// A value with when it was set (seconds since 1970).
@@ -128,6 +143,7 @@ pub fn merge(a: &SyncFile, b: &SyncFile) -> SyncFile {
                 title: if x.title.is_empty() { y.title.clone() } else { x.title.clone() },
                 position: newer(&x.position, &y.position),
                 details: newer(&x.details, &y.details),
+                marks: newer(&x.marks, &y.marks),
                 annotations,
             },
         );
@@ -269,5 +285,16 @@ mod tests {
         let u2 = new_uid(123_456_789, 2, "dev");
         assert_ne!(u1, u2);
         assert_ne!(new_uid(1, 1, "a"), new_uid(1, 1, "b"));
+    }
+
+    #[test]
+    fn marks_follow_the_newest() {
+        let m = |tag: &str, at| Stamped { value: Marks { tags: vec![tag.into()], rating: Some(4), status: None }, at };
+        let mut fa = SyncFile::default();
+        let mut fb = SyncFile::default();
+        fa.books.insert("k".into(), BookSync { marks: Some(m("old", 10)), ..Default::default() });
+        fb.books.insert("k".into(), BookSync { marks: Some(m("new", 20)), ..Default::default() });
+        assert_eq!(merge(&fa, &fb).books["k"].marks.as_ref().unwrap().value.tags, vec!["new".to_string()]);
+        assert_eq!(merge(&fb, &fa).books["k"].marks.as_ref().unwrap().value.tags, vec!["new".to_string()]);
     }
 }

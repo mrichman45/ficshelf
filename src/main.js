@@ -1,6 +1,7 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen as onEvent } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { parseQuery, matchesQuery, readStatus } from "./query.js";
 import { open as openDialog, save as saveDialog, ask } from "@tauri-apps/plugin-dialog";
 import ePub from "epubjs";
 import * as pdfjs from "pdfjs-dist";
@@ -402,12 +403,25 @@ async function refreshLibrary() {
   await refreshUpdateBadge();
 }
 
+let filterTerms = { text: null, terms: [] };
+/// Selecting several books (Library ⋯ → Select books).
+const selection = { on: false, ids: new Set() };
+
+/// The library filter understands Calibre-style fields (see query.js).
 function matchesFilter(book) {
   if (!state.filter) return true;
-  const needle = state.filter.toLowerCase();
-  return [book.title, book.author, book.series, book.folder].some((v) =>
-    (v || "").toLowerCase().includes(needle),
-  );
+  if (filterTerms.text !== state.filter) filterTerms = { text: state.filter, terms: parseQuery(state.filter) };
+  return matchesQuery(book, filterTerms.terms);
+}
+
+const STARS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"];
+
+/// The line under a cover: author, then stars if rated.
+function cardSubtitle(book) {
+  const bits = [];
+  if (book.author) bits.push(book.author);
+  if (book.rating) bits.push(STARS[book.rating]);
+  return bits.join(" · ");
 }
 
 // ---------------------------------------------------------------- series
@@ -568,8 +582,20 @@ function cardShell(titleText, subText, coverBook) {
 }
 
 function bookCard(book, { showNumber = false } = {}) {
-  const card = cardShell(book.title, book.author, book);
+  const card = cardShell(book.title, cardSubtitle(book), book);
   card.title = book.missing ? `Missing: ${book.path}` : book.path;
+  card.dataset.id = book.id;
+  if (readStatus(book) === "finished") {
+    const done = document.createElement("span");
+    done.className = "done-mark";
+    done.textContent = "✓";
+    done.title = "Finished";
+    card.appendChild(done);
+  }
+  if (selection.on) {
+    card.classList.add("selectable");
+    card.classList.toggle("selected", selection.ids.has(book.id));
+  }
 
   const fmt = document.createElement("span");
   fmt.className = "fmt";
@@ -603,6 +629,10 @@ function bookCard(book, { showNumber = false } = {}) {
   card.addEventListener("click", () => {
     if (pressedLong) {
       pressedLong = false;
+      return;
+    }
+    if (selection.on) {
+      toggleSelected(book.id, card);
       return;
     }
     if (book.drm) openLocked(book);
@@ -746,6 +776,10 @@ $("#book-menu-edit").addEventListener("click", () => {
   $("#edit-author").value = book.author || "";
   $("#edit-series").value = book.series || "";
   $("#edit-index").value = book.series_index ?? "";
+  $("#edit-tags").value = (book.tags || []).join(", ");
+  $("#edit-rating").value = book.rating ? String(book.rating) : "";
+  $("#edit-status").value = book.status || "";
+  renderTagPicks();
   const names = [...new Set(state.books.map((b) => b.series).filter(Boolean))].sort();
   const list = $("#series-names");
   list.textContent = "";
@@ -773,6 +807,12 @@ $("#edit-form").addEventListener("submit", async (e) => {
       series: $("#edit-series").value,
       seriesIndex: Number.isFinite(index) ? index : null,
     });
+    await call("set_marks", {
+      id: book.id,
+      tags: splitTags($("#edit-tags").value),
+      rating: $("#edit-rating").value ? Number($("#edit-rating").value) : null,
+      status: $("#edit-status").value || null,
+    });
   } catch {
     return; // the toast says why; leave the form open to fix it
   }
@@ -785,6 +825,325 @@ $("#edit-form").addEventListener("submit", async (e) => {
   await refreshLibrary();
   toast("Saved.");
 });
+
+function splitTags(text) {
+  return (text || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/// Her most used tags as chips under the Tags box; tapping one adds it.
+let tagCache = [];
+async function renderTagPicks() {
+  try {
+    tagCache = await invoke("list_tags");
+  } catch {
+    tagCache = [];
+  }
+  const box = $("#edit-tag-picks");
+  box.textContent = "";
+  const have = new Set(splitTags($("#edit-tags").value).map((t) => t.toLowerCase()));
+  for (const [tag] of tagCache.slice(0, 16)) {
+    if (have.has(tag.toLowerCase())) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = tag;
+    b.addEventListener("click", () => {
+      const now = splitTags($("#edit-tags").value);
+      now.push(tag);
+      $("#edit-tags").value = now.join(", ");
+      b.remove();
+    });
+    box.appendChild(b);
+  }
+}
+
+// Quick finish / unread from the book menu.
+$("#book-menu-finished").addEventListener("click", async () => {
+  $("#book-menu").close();
+  const book = menuBook;
+  if (!book) return;
+  const done = readStatus(book) === "finished";
+  await call("set_marks", { id: book.id, tags: book.tags || [], rating: book.rating ?? null, status: done ? "unread" : "finished" });
+  await refreshLibrary();
+  toast(done ? "Marked as unread." : "Marked as finished.");
+});
+
+// -------------------------------------------------------- library menu
+
+$("#btn-lib-more").addEventListener("click", () => $("#lib-menu").showModal());
+$("#lib-menu-cancel").addEventListener("click", () => $("#lib-menu").close());
+$("#lib-menu").addEventListener("click", (e) => {
+  if (e.target === $("#lib-menu")) $("#lib-menu").close();
+});
+$("#lib-select").addEventListener("click", () => {
+  $("#lib-menu").close();
+  startSelecting();
+});
+$("#lib-search-help").addEventListener("click", () => {
+  $("#lib-menu").close();
+  $("#search-help").showModal();
+});
+$("#search-help-close").addEventListener("click", () => $("#search-help").close());
+
+// ----------------------------------------------------------- selecting
+
+function startSelecting(firstId) {
+  selection.on = true;
+  selection.ids = new Set(firstId != null ? [firstId] : []);
+  document.body.classList.add("selecting");
+  $("#select-bar").hidden = false;
+  renderShelf();
+  updateSelectBar();
+}
+
+function stopSelecting() {
+  selection.on = false;
+  selection.ids.clear();
+  document.body.classList.remove("selecting");
+  $("#select-bar").hidden = true;
+  renderShelf();
+}
+
+function toggleSelected(id, card) {
+  if (selection.ids.has(id)) selection.ids.delete(id);
+  else selection.ids.add(id);
+  card?.classList.toggle("selected", selection.ids.has(id));
+  updateSelectBar();
+}
+
+function updateSelectBar() {
+  const n = selection.ids.size;
+  $("#select-count").textContent = `${n} selected`;
+  $("#select-edit").disabled = n === 0;
+  $("#select-remove").disabled = n === 0;
+}
+
+/// The selected books in the order they are shown, for numbering a series.
+function selectedInOrder() {
+  return [...document.querySelectorAll("#shelf .card[data-id]")]
+    .map((c) => Number(c.dataset.id))
+    .filter((id) => selection.ids.has(id));
+}
+
+$("#book-menu-select").addEventListener("click", () => {
+  $("#book-menu").close();
+  if (menuBook) startSelecting(menuBook.id);
+});
+$("#select-done").addEventListener("click", stopSelecting);
+$("#select-all").addEventListener("click", () => {
+  document.querySelectorAll("#shelf .card[data-id]").forEach((c) => selection.ids.add(Number(c.dataset.id)));
+  renderShelf();
+  updateSelectBar();
+});
+$("#select-remove").addEventListener("click", async () => {
+  const ids = [...selection.ids];
+  if (!ids.length) return;
+  if (!(await confirmAsk(`Remove ${ids.length} book${ids.length === 1 ? "" : "s"} from the library?\n\nThe files themselves are not deleted.`))) return;
+  for (const id of ids) await call("forget_book", { id }).catch(() => {});
+  stopSelecting();
+  await refreshLibrary();
+});
+$("#select-edit").addEventListener("click", () => {
+  const n = selection.ids.size;
+  if (!n) return;
+  $("#bulk-title").textContent = `Edit ${n} book${n === 1 ? "" : "s"}`;
+  for (const id of ["bulk-author", "bulk-series", "bulk-add-tags", "bulk-remove-tags"]) $(`#${id}`).value = "";
+  $("#bulk-number").checked = false;
+  $("#bulk-clear-series").checked = false;
+  $("#bulk-rating").value = "keep";
+  $("#bulk-status").value = "keep";
+  $("#bulk-dialog").showModal();
+});
+$("#bulk-cancel").addEventListener("click", () => $("#bulk-dialog").close());
+$("#bulk-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const rating = $("#bulk-rating").value;
+  const status = $("#bulk-status").value;
+  const change = {
+    author: $("#bulk-author").value || null,
+    series: $("#bulk-series").value || null,
+    clearSeries: $("#bulk-clear-series").checked,
+    numberFrom: $("#bulk-number").checked ? Number($("#bulk-number-from").value) || 1 : null,
+    addTags: splitTags($("#bulk-add-tags").value),
+    removeTags: splitTags($("#bulk-remove-tags").value),
+    rating: /^[1-5]$/.test(rating) ? Number(rating) : null,
+    clearRating: rating === "none",
+    status: status === "keep" ? null : status,
+  };
+  try {
+    const n = await call("bulk_edit", { ids: selectedInOrder(), change });
+    $("#bulk-dialog").close();
+    stopSelecting();
+    await refreshLibrary();
+    toast(`${n} book${n === 1 ? "" : "s"} updated.`);
+  } catch {
+    /* the toast says why */
+  }
+});
+
+// ------------------------------------------------------ online lookup
+
+let lookupBook = null;
+
+$("#book-menu-online").addEventListener("click", () => {
+  $("#book-menu").close();
+  if (!menuBook) return;
+  lookupBook = menuBook;
+  // A file name often carries volume numbers and brackets; the series
+  // and title together are usually the better search.
+  $("#lookup-title").value = lookupBook.title;
+  $("#lookup-author").value = lookupBook.author || "";
+  $("#lookup-results").textContent = "";
+  $("#lookup-status").textContent = "";
+  $("#lookup-dialog").showModal();
+  runLookup();
+});
+$("#lookup-close").addEventListener("click", () => $("#lookup-dialog").close());
+$("#lookup-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  runLookup();
+});
+
+async function runLookup() {
+  const title = $("#lookup-title").value.trim();
+  const author = $("#lookup-author").value.trim();
+  if (!title) return;
+  $("#lookup-status").textContent = "Searching…";
+  $("#lookup-results").textContent = "";
+  let found = [];
+  try {
+    found = await invoke("lookup_book", { title, author: author || null });
+  } catch (e) {
+    $("#lookup-status").textContent = String(e);
+    logError("find details online", e);
+    return;
+  }
+  $("#lookup-status").textContent = found.length ? `${found.length} results.` : "Nothing found. Try fewer words, or leave out the author.";
+  for (const c of found) $("#lookup-results").appendChild(lookupCard(c));
+}
+
+function lookupCard(c) {
+  const el = document.createElement("article");
+  el.className = "lookup-card";
+  if (c.cover_url) {
+    const img = document.createElement("img");
+    img.src = c.cover_url;
+    img.alt = "";
+    img.loading = "lazy";
+    el.appendChild(img);
+  } else {
+    const ph = document.createElement("div");
+    ph.className = "lookup-nocover";
+    ph.textContent = "No cover";
+    el.appendChild(ph);
+  }
+  const info = document.createElement("div");
+  const t = document.createElement("strong");
+  t.textContent = c.title;
+  const by = document.createElement("div");
+  by.className = "muted small";
+  by.textContent = [c.authors.join(", "), c.year, c.publisher, c.source].filter(Boolean).join(" · ");
+  info.append(t, by);
+  if (c.description) {
+    const d = document.createElement("p");
+    d.className = "small";
+    d.textContent = c.description.length > 220 ? `${c.description.slice(0, 220)}…` : c.description;
+    info.appendChild(d);
+  }
+  const row = document.createElement("div");
+  row.className = "row";
+  const useAll = document.createElement("button");
+  useAll.className = "primary";
+  useAll.textContent = "Use this";
+  useAll.addEventListener("click", () => applyLookup(c, { details: true, cover: true }));
+  row.appendChild(useAll);
+  if (c.cover_url) {
+    const coverOnly = document.createElement("button");
+    coverOnly.textContent = "Cover only";
+    coverOnly.addEventListener("click", () => applyLookup(c, { details: false, cover: true }));
+    row.appendChild(coverOnly);
+  }
+  info.appendChild(row);
+  el.appendChild(info);
+  return el;
+}
+
+async function applyLookup(c, { details, cover }) {
+  if (!lookupBook) return;
+  try {
+    await call("apply_lookup", {
+      id: lookupBook.id,
+      title: details ? c.title : null,
+      author: details ? c.authors.join(", ") || null : null,
+      coverUrl: cover ? c.cover_url || null : null,
+    });
+    $("#lookup-dialog").close();
+    await refreshLibrary();
+    toast(details ? "Details updated." : "Cover updated.");
+  } catch {
+    /* the toast says why */
+  }
+}
+
+// ----------------------------------------------------------- duplicates
+
+$("#lib-duplicates").addEventListener("click", async () => {
+  $("#lib-menu").close();
+  $("#dupes-list").textContent = "";
+  $("#dupes-status").textContent = "Looking…";
+  $("#dupes-dialog").showModal();
+  let groups = [];
+  try {
+    groups = await invoke("find_duplicates");
+  } catch (e) {
+    $("#dupes-status").textContent = `Could not look: ${e}`;
+    logError("find duplicates", e);
+    return;
+  }
+  renderDupes(groups);
+});
+$("#dupes-close").addEventListener("click", () => $("#dupes-dialog").close());
+
+function renderDupes(groups) {
+  const box = $("#dupes-list");
+  box.textContent = "";
+  $("#dupes-status").textContent = groups.length
+    ? `${groups.length} book${groups.length === 1 ? " is" : "s are"} in the library more than once. Pick the copy to keep; the others' highlights, notes and tags move to it, and they leave the library (no file is deleted).`
+    : "No duplicates found.";
+  for (const g of groups) {
+    const sec = document.createElement("section");
+    sec.className = "dupe-group";
+    const h = document.createElement("h4");
+    h.textContent = `${g.books[0].title}${g.reason === "same file" ? " — identical files" : " — same title and author"}`;
+    sec.appendChild(h);
+    for (const b of g.books) {
+      const row = document.createElement("div");
+      row.className = "dupe-row";
+      const where = document.createElement("span");
+      where.className = "muted small";
+      where.textContent = `${b.format.toUpperCase()} · ${b.path}`;
+      const keep = document.createElement("button");
+      keep.textContent = "Keep this one";
+      keep.addEventListener("click", async () => {
+        const others = g.books.filter((o) => o.id !== b.id).map((o) => o.id);
+        try {
+          await call("merge_books", { keep: b.id, others });
+          sec.remove();
+          await refreshLibrary();
+          toast("Merged.");
+        } catch {
+          /* the toast says why */
+        }
+      });
+      row.append(where, keep);
+      sec.appendChild(row);
+    }
+    box.appendChild(sec);
+  }
+}
 
 /// Hold a finger still on `el` for about half a second.
 function onLongPress(el, fn) {
@@ -1030,7 +1389,10 @@ async function checkFolders(quiet) {
   }
 }
 
-$("#btn-check-folders").addEventListener("click", () => checkFolders(false));
+$("#btn-check-folders").addEventListener("click", () => {
+  $("#lib-menu").close();
+  checkFolders(false);
+});
 
 // At startup, a few seconds in, so opening the app is never slowed.
 setTimeout(async () => {

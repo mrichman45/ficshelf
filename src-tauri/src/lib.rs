@@ -12,6 +12,7 @@ mod audiometa;
 mod backup;
 mod cooldown;
 mod thumb;
+mod lookup;
 mod creds;
 mod db;
 mod epubgen;
@@ -722,6 +723,251 @@ fn update_metadata(
     db::get_book(&conn, id)
         .map_err(chain)?
         .ok_or_else(|| "that book is not in the library".to_string())
+}
+
+/// Set a book's tags, rating and read status.
+#[tauri::command]
+fn set_marks(
+    state: State<'_, AppState>,
+    id: i64,
+    tags: Vec<String>,
+    rating: Option<u8>,
+    status: Option<String>,
+) -> Result<db::Book, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::set_marks(&conn, id, &tags, rating, status.as_deref(), db::now()).map_err(chain)?;
+    db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
+}
+
+#[tauri::command]
+fn list_tags(state: State<'_, AppState>) -> Result<Vec<(String, i64)>, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::all_tags(&conn).map_err(chain)
+}
+
+/// What to change on several books at once. Anything left out is left as
+/// each book has it.
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct BulkChange {
+    author: Option<String>,
+    series: Option<String>,
+    clear_series: bool,
+    /// Number the books in the order given, starting here (with a series).
+    number_from: Option<f64>,
+    add_tags: Vec<String>,
+    remove_tags: Vec<String>,
+    rating: Option<u8>,
+    clear_rating: bool,
+    status: Option<String>,
+}
+
+#[tauri::command]
+fn bulk_edit(state: State<'_, AppState>, ids: Vec<i64>, change: BulkChange) -> Result<usize, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let tidy = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let author = tidy(&change.author);
+    let series = tidy(&change.series);
+    let mut changed = 0;
+    for (n, id) in ids.iter().enumerate() {
+        let Some(book) = db::get_book(&conn, *id).map_err(chain)? else { continue };
+        if author.is_some() || series.is_some() || change.clear_series {
+            let new_series = if change.clear_series { None } else { series.clone().or(book.series.clone()) };
+            let index = match (change.number_from, &new_series) {
+                (Some(start), Some(_)) => Some(start + n as f64),
+                _ if change.clear_series => None,
+                _ => book.series_index,
+            };
+            db::update_metadata(
+                &conn,
+                *id,
+                &book.title,
+                author.as_deref().or(book.author.as_deref()),
+                new_series.as_deref(),
+                index,
+            )
+            .map_err(chain)?;
+        }
+        let touches_marks = !change.add_tags.is_empty()
+            || !change.remove_tags.is_empty()
+            || change.rating.is_some()
+            || change.clear_rating
+            || change.status.is_some();
+        if touches_marks {
+            let mut tags = book.tags.clone();
+            tags.retain(|t| !change.remove_tags.iter().any(|r| r.trim().eq_ignore_ascii_case(t)));
+            tags.extend(change.add_tags.iter().cloned());
+            let rating = if change.clear_rating { None } else { change.rating.or(book.rating) };
+            let status = change.status.clone().or(book.status.clone());
+            db::set_marks(&conn, *id, &tags, rating, status.as_deref(), db::now()).map_err(chain)?;
+        }
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+// ------------------------------------------------------- online lookup
+
+#[tauri::command]
+async fn lookup_book(title: String, author: Option<String>) -> Result<Vec<lookup::Candidate>, String> {
+    lookup::search(&title, author.as_deref().unwrap_or("")).await.map_err(chain)
+}
+
+/// Use a lookup result: its title and author (each only if asked), and
+/// its cover (if asked and it has one). Series, tags and the rest stay.
+#[tauri::command]
+async fn apply_lookup(
+    state: State<'_, AppState>,
+    id: i64,
+    title: Option<String>,
+    author: Option<String>,
+    cover_url: Option<String>,
+) -> Result<db::Book, String> {
+    let cover = match cover_url.filter(|u| !u.trim().is_empty()) {
+        Some(u) => Some(lookup::cover(&u).await.map_err(chain)?),
+        None => None,
+    };
+    let conn = state.conn.lock().map_err(err)?;
+    let book = db::get_book(&conn, id).map_err(chain)?.ok_or("that book is not in the library")?;
+    let tidy = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let (title, author) = (tidy(title), tidy(author));
+    if title.is_some() || author.is_some() {
+        db::update_metadata(
+            &conn,
+            id,
+            title.as_deref().unwrap_or(&book.title),
+            author.as_deref().or(book.author.as_deref()),
+            book.series.as_deref(),
+            book.series_index,
+        )
+        .map_err(chain)?;
+    }
+    if let Some((bytes, mime)) = cover {
+        let (bytes, mime) = thumb::shrink(bytes, mime);
+        db::set_cover(&conn, id, &bytes, &mime).map_err(chain)?;
+    }
+    db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
+}
+
+// ------------------------------------------------------------ duplicates
+
+#[derive(Serialize)]
+struct DuplicateGroup {
+    /// "same file" (identical contents) or "same book" (same title and
+    /// author, different files, such as an EPUB and a PDF of it).
+    reason: &'static str,
+    books: Vec<db::Book>,
+}
+
+/// A title and author reduced to letters and digits, for "same book".
+fn book_identity(b: &db::Book) -> String {
+    let squash = |s: &str| -> String {
+        s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    };
+    format!("{}|{}", squash(&b.title), squash(b.author.as_deref().unwrap_or("")))
+}
+
+/// Books that are in the library more than once. Identical files are
+/// found by size first and fingerprinted only when sizes match, so a big
+/// library is not read through.
+#[tauri::command]
+async fn find_duplicates(app: tauri::AppHandle) -> Result<Vec<DuplicateGroup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let books = {
+            let conn = state.conn.lock().map_err(err)?;
+            db::list_books(&conn, "title").map_err(chain)?
+        };
+        let mut groups: Vec<DuplicateGroup> = Vec::new();
+        let mut placed: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+        // Identical files.
+        let mut by_size: std::collections::HashMap<u64, Vec<&db::Book>> = std::collections::HashMap::new();
+        for b in &books {
+            if let Ok(m) = std::fs::metadata(&b.path) {
+                if m.len() > 0 {
+                    by_size.entry(m.len()).or_default().push(b);
+                }
+            }
+        }
+        for (size, same) in by_size {
+            if same.len() < 2 {
+                continue;
+            }
+            let mut by_print: std::collections::HashMap<String, Vec<&db::Book>> = std::collections::HashMap::new();
+            for b in same {
+                let Ok(f) = std::fs::File::open(&b.path) else { continue };
+                let mut head = Vec::with_capacity(1 << 20);
+                use std::io::Read;
+                if f.take(4 * 1024 * 1024).read_to_end(&mut head).is_err() {
+                    continue;
+                }
+                by_print.entry(syncdata::fingerprint(&head, size)).or_default().push(b);
+            }
+            for (_, same) in by_print {
+                if same.len() > 1 {
+                    placed.extend(same.iter().map(|b| b.id));
+                    groups.push(DuplicateGroup { reason: "same file", books: same.into_iter().cloned().collect() });
+                }
+            }
+        }
+
+        // Same title and author, different files.
+        let mut by_name: std::collections::HashMap<String, Vec<&db::Book>> = std::collections::HashMap::new();
+        for b in &books {
+            if !placed.contains(&b.id) && !b.title.trim().is_empty() {
+                by_name.entry(book_identity(b)).or_default().push(b);
+            }
+        }
+        for (_, same) in by_name {
+            if same.len() > 1 {
+                groups.push(DuplicateGroup { reason: "same book", books: same.into_iter().cloned().collect() });
+            }
+        }
+        groups.sort_by(|a, b| a.books[0].title.to_lowercase().cmp(&b.books[0].title.to_lowercase()));
+        Ok(groups)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Keep one book and fold the others into it: their highlights, notes and
+/// bookmarks move across, tags are combined, the higher rating and the
+/// furthest status are kept, and the others leave the library. No file is
+/// deleted.
+#[tauri::command]
+fn merge_books(state: State<'_, AppState>, keep: i64, others: Vec<i64>) -> Result<db::Book, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let kept = db::get_book(&conn, keep).map_err(chain)?.ok_or("that book is not in the library")?;
+    let mut tags = kept.tags.clone();
+    let mut rating = kept.rating;
+    let rank = |s: &Option<String>| match s.as_deref() {
+        Some("finished") => 3,
+        Some("reading") => 2,
+        Some("unread") => 1,
+        _ => 0,
+    };
+    let mut status = kept.status.clone();
+    for id in others.iter().filter(|id| **id != keep) {
+        let Some(o) = db::get_book(&conn, *id).map_err(chain)? else { continue };
+        tags.extend(o.tags.iter().cloned());
+        rating = rating.max(o.rating);
+        if rank(&o.status) > rank(&status) {
+            status = o.status.clone();
+        }
+        // A place in the book only carries over between the same kind of
+        // file; an EPUB position means nothing in a PDF.
+        if kept.position.is_none() && o.format == kept.format {
+            if let Some(pos) = &o.position {
+                db::save_position(&conn, keep, pos).map_err(chain)?;
+            }
+        }
+        conn.execute("UPDATE annotations SET book_id = ?1 WHERE book_id = ?2", rusqlite::params![keep, id])
+            .map_err(err)?;
+        db::forget_book(&conn, *id).map_err(chain)?;
+    }
+    db::set_marks(&conn, keep, &tags, rating, status.as_deref(), db::now()).map_err(chain)?;
+    db::get_book(&conn, keep).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
 }
 
 /// Open a book in the computer's own default app for its file type. Used for
@@ -1872,6 +2118,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            lookup_book,
+            apply_lookup,
+            find_duplicates,
+            merge_books,
+            set_marks,
+            list_tags,
+            bulk_edit,
             import_folder,
             check_folders,
             watched_folders,

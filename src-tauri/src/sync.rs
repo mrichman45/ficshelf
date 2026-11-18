@@ -158,6 +158,10 @@ pub async fn run(
                         },
                         at: r.edited_at.unwrap_or(0),
                     }),
+                    marks: r.marks_at.map(|at| sd::Stamped {
+                        value: sd::Marks { tags: r.tags.clone(), rating: r.rating, status: r.status.clone() },
+                        at,
+                    }),
                     annotations: BTreeMap::new(),
                 },
             );
@@ -206,6 +210,12 @@ pub async fn run(
             if let Some(d) = &m.details {
                 if d.at > r.edited_at.unwrap_or(0) {
                     db::apply_details(&c, r.id, &d.value, d.at)?;
+                    summary.details += 1;
+                }
+            }
+            if let Some(mk) = &m.marks {
+                if mk.at > r.marks_at.unwrap_or(0) {
+                    db::set_marks(&c, r.id, &mk.value.tags, mk.value.rating, mk.value.status.as_deref(), mk.at)?;
                     summary.details += 1;
                 }
             }

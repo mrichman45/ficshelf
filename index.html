@@ -45,7 +45,7 @@
             <button data-libview="all" class="active" role="tab">All books</button>
             <button data-libview="series" role="tab">Series</button>
           </div>
-          <input id="filter" type="search" placeholder="Filter by title, author or series…" />
+          <input id="filter" type="search" placeholder="Filter… (try tag:comfort or rating:>=4)" />
           <select id="sort">
             <option value="added">Recently added</option>
             <option value="recent">Recently read</option>
@@ -56,7 +56,7 @@
           <button id="lib-layout" title="Grid or list" aria-label="Grid or list"></button>
           <button id="btn-add-files">Add files…</button>
           <button id="btn-add-folder">Add folder…</button>
-          <button id="btn-check-folders" hidden title="Look in your folders for books added since">Check folders</button>
+          <button id="btn-lib-more" class="icon" title="More library tools">⋯</button>
         </header>
         <div id="series-head" class="series-head" hidden>
           <button id="btn-series-back">← All series</button>
@@ -499,6 +499,15 @@
       </section>
     </main>
 
+    <!-- Selecting several books. -->
+    <div id="select-bar" hidden>
+      <span id="select-count">0 selected</span>
+      <button id="select-all">All</button>
+      <button id="select-edit" class="primary">Edit…</button>
+      <button id="select-remove">Remove</button>
+      <button id="select-done">Done</button>
+    </div>
+
     <!-- What is playing, while she browses elsewhere. -->
     <div id="mini-player" hidden>
       <button id="mini-open" class="mini-open" aria-label="Open the podfic player"><span id="mini-title"></span><span id="mini-time"></span></button>
@@ -516,8 +525,89 @@
     <dialog id="book-menu" class="sheet">
       <p id="book-menu-title" class="sheet-title"></p>
       <button id="book-menu-edit">Edit details</button>
+      <button id="book-menu-finished">Mark as finished</button>
+      <button id="book-menu-online">Find details online</button>
+      <button id="book-menu-convert" hidden>Convert</button>
+      <button id="book-menu-select">Select more books</button>
       <button id="book-menu-remove" class="danger">Remove from library</button>
       <button id="book-menu-cancel">Cancel</button>
+    </dialog>
+
+    <dialog id="lib-menu" class="sheet">
+      <p class="sheet-title">Library</p>
+      <button id="lib-select">Select books…</button>
+      <button id="lib-duplicates">Find duplicates</button>
+      <button id="btn-check-folders" hidden>Check folders for new books</button>
+      <button id="lib-search-help">Search tips</button>
+      <button id="lib-menu-cancel">Cancel</button>
+    </dialog>
+
+    <dialog id="search-help" class="sheet">
+      <h3>Searching your library</h3>
+      <p class="muted">Words match titles, authors, series, folders and tags. Add fields to narrow it down; put <strong>-</strong> in front to leave things out.</p>
+      <ul class="help-list">
+        <li><code>tag:comfort</code> · <code>tag:hurt*</code> (starts with)</li>
+        <li><code>author:"terry pratchett"</code> · <code>series:discworld</code></li>
+        <li><code>rating:5</code> · <code>rating:&gt;=4</code> · <code>rating:none</code></li>
+        <li><code>status:unread</code> · <code>status:reading</code> · <code>status:finished</code></li>
+        <li><code>format:epub</code> · <code>format:manga</code> · <code>format:podfic</code></li>
+        <li><code>folder:manga</code> · <code>ao3:yes</code> · <code>missing:yes</code> · <code>new:yes</code></li>
+        <li><code>tag:angst -status:finished</code> (unfinished angst)</li>
+      </ul>
+      <div class="row"><button id="search-help-close" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="bulk-dialog" class="sheet">
+      <form id="bulk-form" method="dialog">
+        <h3 id="bulk-title">Edit books</h3>
+        <p class="muted small">Leave a field empty to keep each book's own.</p>
+        <label>Author <input id="bulk-author" type="text" /></label>
+        <label>Series <input id="bulk-series" type="text" list="series-names" /></label>
+        <label class="check"><input id="bulk-number" type="checkbox" /> Number them in this order, starting at
+          <input id="bulk-number-from" type="number" min="0" step="any" value="1" class="narrow" /></label>
+        <label class="check"><input id="bulk-clear-series" type="checkbox" /> Take them out of their series</label>
+        <label>Add tags <input id="bulk-add-tags" type="text" placeholder="comma, separated" /></label>
+        <label>Remove tags <input id="bulk-remove-tags" type="text" placeholder="comma, separated" /></label>
+        <div class="row two">
+          <label>Rating
+            <select id="bulk-rating">
+              <option value="keep">Keep</option><option value="none">No rating</option>
+              <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+              <option value="4">★★★★</option><option value="5">★★★★★</option>
+            </select>
+          </label>
+          <label>Status
+            <select id="bulk-status">
+              <option value="keep">Keep</option>
+              <option value="unread">Unread</option><option value="reading">Reading</option><option value="finished">Finished</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <button type="button" id="bulk-cancel">Cancel</button>
+          <button type="submit" class="primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="lookup-dialog" class="sheet tall">
+      <h3>Find details online</h3>
+      <form id="lookup-form" class="lookup-form">
+        <input id="lookup-title" type="search" placeholder="Title" />
+        <input id="lookup-author" type="search" placeholder="Author (optional)" />
+        <button type="submit" class="primary">Search</button>
+      </form>
+      <p class="muted small">Searches Google Books and Open Library for these words only. Pick a result to use its title, author or cover; series, tags and notes are left alone.</p>
+      <p id="lookup-status" class="muted small"></p>
+      <div id="lookup-results" class="lookup-results"></div>
+      <div class="row"><button id="lookup-close">Close</button></div>
+    </dialog>
+
+    <dialog id="dupes-dialog" class="sheet tall">
+      <h3>Duplicates</h3>
+      <p id="dupes-status" class="muted small"></p>
+      <div id="dupes-list"></div>
+      <div class="row"><button id="dupes-close" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="edit-dialog" class="sheet">
@@ -530,6 +620,25 @@
           <input id="edit-index" type="number" min="0" step="any" inputmode="decimal" />
         </label>
         <datalist id="series-names"></datalist>
+        <label>Tags <input id="edit-tags" type="text" placeholder="comma, separated" autocomplete="off" /></label>
+        <div id="edit-tag-picks" class="tag-picks"></div>
+        <div class="row two">
+          <label>Rating
+            <select id="edit-rating">
+              <option value="">No rating</option>
+              <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+              <option value="4">★★★★</option><option value="5">★★★★★</option>
+            </select>
+          </label>
+          <label>Status
+            <select id="edit-status">
+              <option value="">Automatic</option>
+              <option value="unread">Unread</option>
+              <option value="reading">Reading</option>
+              <option value="finished">Finished</option>
+            </select>
+          </label>
+        </div>
         <p class="muted small">
           Your changes are kept even if the file is added again or the work is
           re-downloaded from AO3.

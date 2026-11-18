@@ -39,6 +39,12 @@ pub struct Book {
     /// The DRM a locked book carries ("Adobe DRM"), or None. Locked books
     /// stay in the library but are opened in another app.
     pub drm: Option<String>,
+    /// Her tags, in the order she gave them.
+    pub tags: Vec<String>,
+    /// 1 to 5 stars, or none.
+    pub rating: Option<u8>,
+    /// "unread", "reading" or "finished"; none means not set by hand.
+    pub status: Option<String>,
 }
 
 /// A highlight in a book, with an optional note. `cfi` is the EPUB location
@@ -101,6 +107,12 @@ fn add_columns(conn: &Connection) -> Result<()> {
         ("content_key", "TEXT"),
         ("position_at", "INTEGER"),
         ("edited_at", "INTEGER"),
+        // Her own marks: tags (one per line), 1-5 stars, read status
+        // ("unread", "reading", "finished"), and when they last changed.
+        ("tags", "TEXT"),
+        ("rating", "INTEGER"),
+        ("status", "TEXT"),
+        ("marks_at", "INTEGER"),
     ])?;
     add_columns_to(conn, "annotations", &[("uid", "TEXT"), ("updated_at", "INTEGER")])?;
     conn.execute_batch(
@@ -338,7 +350,7 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
 const BOOK_COLUMNS: &str = "id, path, format, title, author, cover IS NOT NULL,
      added_at, last_opened_at, position, ao3_work_id, chapters_seen,
      chapters_total, complete, last_checked_at, has_update,
-     series, series_index, folder, edited, drm";
+     series, series_index, folder, edited, drm, tags, rating, status";
 
 fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     let path: String = r.get(1)?;
@@ -365,7 +377,69 @@ fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         folder: r.get(17)?,
         edited: r.get::<_, i64>(18)? != 0,
         drm: r.get(19)?,
+        tags: split_tags(r.get::<_, Option<String>>(20)?.as_deref()),
+        rating: r.get::<_, Option<i64>>(21)?.and_then(|n| u8::try_from(n).ok()).filter(|n| (1..=5).contains(n)),
+        status: r.get(22)?,
     })
+}
+
+/// Tags are kept one per line.
+pub fn split_tags(s: Option<&str>) -> Vec<String> {
+    s.unwrap_or("").lines().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string).collect()
+}
+
+/// Tidy a list of tags: trimmed, no blanks, no repeats (ignoring case),
+/// first spelling kept.
+pub fn tidy_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        let t = t.trim().trim_start_matches('#').trim();
+        if t.is_empty() || t.len() > 80 {
+            continue;
+        }
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+const STATUSES: &[&str] = &["unread", "reading", "finished"];
+
+/// Set her marks on a book. `at` is when (now, or another device's time).
+pub fn set_marks(
+    conn: &Connection,
+    id: i64,
+    tags: &[String],
+    rating: Option<u8>,
+    status: Option<&str>,
+    at: i64,
+) -> Result<()> {
+    let tags = tidy_tags(tags).join("\n");
+    let rating = rating.filter(|n| (1..=5).contains(n));
+    let status = status.filter(|s| STATUSES.contains(s));
+    conn.execute(
+        "UPDATE books SET tags = ?2, rating = ?3, status = ?4, marks_at = ?5 WHERE id = ?1",
+        params![id, if tags.is_empty() { None } else { Some(tags) }, rating, status, at],
+    )?;
+    Ok(())
+}
+
+/// Every tag in the library with how many books carry it, most used first.
+pub fn all_tags(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut st = conn.prepare("SELECT tags FROM books WHERE tags IS NOT NULL")?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    let mut counts: Vec<(String, i64)> = Vec::new();
+    for r in rows {
+        for t in split_tags(Some(&r?)) {
+            match counts.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&t)) {
+                Some(c) => c.1 += 1,
+                None => counts.push((t, 1)),
+            }
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    Ok(counts)
 }
 
 pub fn list_books(conn: &Connection, sort: &str) -> Result<Vec<Book>> {
@@ -585,12 +659,17 @@ pub struct SyncRow {
     pub position_at: Option<i64>,
     pub edited: bool,
     pub edited_at: Option<i64>,
+    pub tags: Vec<String>,
+    pub rating: Option<u8>,
+    pub status: Option<String>,
+    pub marks_at: Option<i64>,
 }
 
 pub fn sync_rows(conn: &Connection) -> Result<Vec<SyncRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, path, title, author, series, series_index, ao3_work_id, content_key,
-                position, COALESCE(position_at, last_opened_at), edited, edited_at
+                position, COALESCE(position_at, last_opened_at), edited, edited_at,
+                tags, rating, status, marks_at
          FROM books",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -607,6 +686,10 @@ pub fn sync_rows(conn: &Connection) -> Result<Vec<SyncRow>> {
             position_at: r.get(9)?,
             edited: r.get::<_, i64>(10)? != 0,
             edited_at: r.get(11)?,
+            tags: split_tags(r.get::<_, Option<String>>(12)?.as_deref()),
+            rating: r.get::<_, Option<i64>>(13)?.and_then(|n| u8::try_from(n).ok()),
+            status: r.get(14)?,
+            marks_at: r.get(15)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
