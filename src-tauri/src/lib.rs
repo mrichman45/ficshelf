@@ -629,22 +629,47 @@ async fn save_podfic_url(
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
         return Err("that is not a web link".into());
     }
+    // The standard "compatible" form: it still names FicShelf, but small
+    // hosts that refuse anything not starting "Mozilla/5.0" let it through.
     let client = reqwest::Client::builder()
         .user_agent(concat!(
-            "FicShelf/",
+            "Mozilla/5.0 (compatible; FicShelf/",
             env!("CARGO_PKG_VERSION"),
-            " (podfic download; https://github.com/mrichman45/ficshelf)"
+            "; podfic download; +https://github.com/mrichman45/ficshelf)"
         ))
-        .connect_timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(err)?;
-    let mut resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("could not reach that site: {e}"))?;
+    let fetch = || {
+        client
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "audio/*, */*;q=0.8")
+            .send()
+    };
+    // One retry after a pause if the host is busy or slow to answer;
+    // personal podfic hosts often are.
+    let busy = |r: &Result<reqwest::Response, reqwest::Error>| match r {
+        Ok(resp) => matches!(resp.status().as_u16(), 502 | 503 | 504),
+        Err(e) => e.is_timeout() || e.is_connect(),
+    };
+    let mut first = fetch().await;
+    if busy(&first) {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        first = fetch().await;
+    }
+    let mut resp = first.map_err(|e| {
+        if e.is_timeout() || e.is_connect() {
+            format!("that site did not answer (it may be down): {e}")
+        } else {
+            format!("could not reach that site: {e}")
+        }
+    })?;
     if !resp.status().is_success() {
-        return Err(format!("the site answered {} for that link", resp.status()));
+        return Err(format!(
+            "the site answered {} for that link{}",
+            resp.status(),
+            if resp.status().as_u16() == 503 { " (it is busy or down; try again later)" } else { "" }
+        ));
     }
     if resp.content_length().is_some_and(|n| n > MAX_PODFIC_BYTES) {
         return Err("that file is over 2 GB, too large to save".into());
