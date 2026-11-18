@@ -424,6 +424,24 @@
           </p>
         </div>
 
+        <div class="setting">
+          <h3>Share over Wi-Fi</h3>
+          <p class="muted">
+            Open your library from another phone, tablet or computer on the
+            same Wi-Fi, in its web browser, and download books from it. Only
+            while this is on, and only with the PIN. Nothing can be changed or
+            added from the other device.
+          </p>
+          <div class="row">
+            <button id="btn-share">Start sharing</button>
+          </div>
+          <div id="share-info" class="share-info" hidden>
+            <p>On the other device, open <strong id="share-url"></strong></p>
+            <p>PIN: <strong id="share-pin" class="share-pin"></strong></p>
+            <p class="muted small">Keep FicShelf open while sharing. It stops when you tap Stop or close the app.</p>
+          </div>
+        </div>
+
         <div class="setting" id="watched-setting" hidden>
           <h3>Folders FicShelf watches</h3>
           <p class="muted">

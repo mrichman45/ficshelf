@@ -14,6 +14,7 @@ mod cooldown;
 mod thumb;
 mod lookup;
 mod convert;
+mod share;
 mod mobi;
 mod creds;
 mod db;
@@ -35,6 +36,8 @@ pub struct AppState {
     conn: Mutex<rusqlite::Connection>,
     ao3: ao3::Ao3Client,
     sync: sync::SyncState,
+    /// Share over Wi-Fi, when switched on.
+    share: share::Share,
     /// Where downloaded works are written. Books imported from elsewhere stay
     /// where they are; only AO3 downloads land here.
     library_dir: Mutex<PathBuf>,
@@ -943,6 +946,52 @@ async fn apply_lookup(
         db::set_cover(&conn, id, &bytes, &mime).map_err(chain)?;
     }
     db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
+}
+
+// ------------------------------------------------------ share over Wi-Fi
+
+struct SharedLibrary(tauri::AppHandle);
+
+impl share::Library for SharedLibrary {
+    fn items(&self) -> Vec<share::Item> {
+        let state = self.0.state::<AppState>();
+        let Ok(conn) = state.conn.lock() else { return Vec::new() };
+        db::list_books(&conn, "title")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| !b.missing && b.drm.is_none())
+            .map(|b| share::Item {
+                id: b.id,
+                title: b.title,
+                author: b.author.unwrap_or_default(),
+                series: b.series.unwrap_or_default(),
+                format: b.format,
+                path: b.path,
+                has_cover: b.has_cover,
+            })
+            .collect()
+    }
+
+    fn cover(&self, id: i64) -> Option<(Vec<u8>, String)> {
+        let state = self.0.state::<AppState>();
+        let conn = state.conn.lock().ok()?;
+        db::cover_bytes(&conn, id).ok().flatten()
+    }
+}
+
+#[tauri::command]
+fn share_start(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<share::Status, String> {
+    state.share.start(std::sync::Arc::new(SharedLibrary(app.clone()))).map_err(chain)
+}
+
+#[tauri::command]
+fn share_stop(state: State<'_, AppState>) {
+    state.share.stop();
+}
+
+#[tauri::command]
+fn share_status(state: State<'_, AppState>) -> Option<share::Status> {
+    state.share.status()
 }
 
 // ------------------------------------------------------------ duplicates
@@ -2207,6 +2256,7 @@ pub fn run() {
                 conn: Mutex::new(conn),
                 ao3: ao3::Ao3Client::new(Some(data_dir.join("ao3-cooldown")))?,
                 sync: sync::SyncState::default(),
+                share: share::Share::default(),
                 library_dir: Mutex::new(library_dir),
             });
             Ok(())
@@ -2214,6 +2264,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            share_start,
+            share_stop,
+            share_status,
             convert_book,
             lookup_book,
             apply_lookup,

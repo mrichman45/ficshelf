@@ -1372,6 +1372,33 @@ async function importFolderInPlace(path) {
   }
 }
 
+// ------------------------------------------------------ share over Wi-Fi
+
+function showShare(st) {
+  $("#share-info").hidden = !st;
+  $("#btn-share").textContent = st ? "Stop sharing" : "Start sharing";
+  if (st) {
+    $("#share-url").textContent = st.url;
+    $("#share-pin").textContent = st.pin;
+  }
+}
+
+$("#btn-share").addEventListener("click", async () => {
+  const on = !$("#share-info").hidden;
+  try {
+    if (on) {
+      await invoke("share_stop");
+      showShare(null);
+    } else {
+      showShare(await invoke("share_start"));
+    }
+  } catch (e) {
+    logError("share over Wi-Fi", e);
+    toast(`Could not start sharing: ${e}`, true, false);
+  }
+});
+invoke("share_status").then(showShare).catch(() => {});
+
 // ------------------------------------------------------ watched folders
 
 async function refreshWatched() {
