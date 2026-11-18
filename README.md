@@ -23,6 +23,14 @@ their tags. The player has 15/30-second skips, speed from 0.75× to 2.5×, a
 sleep timer, and keeps playing (with a small bar at the bottom) while you
 browse. Its place is saved and synced like a reading position.
 
+**Calibre-style tools** — tags, 1–5 star ratings and read status (synced);
+a library filter with `tag:`, `author:`, `series:`, `rating:>=4`,
+`status:`, `format:` and `-` to exclude; editing many books at once;
+finding and merging duplicates; looking books up on Google Books and Open
+Library; reading CBR, CB7, image folders and DRM-free MOBI/AZW3; converting
+Kindle books to EPUB and comics to CBZ; and an opt-in, PIN-protected
+library page for other devices on the same Wi-Fi.
+
 **Series** — the Library's second tab groups books by series, or by the
 folder they were added from when they have none, in reading order.
 

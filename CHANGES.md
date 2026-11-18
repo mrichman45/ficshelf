@@ -4,6 +4,31 @@ Each release's section here is shown at the top of its page on GitHub.
 
 ## 1.1.0
 
+Library tools in the spirit of Calibre:
+
+- **Tags, ratings and read status.** Tag books your own way, give them 1–5
+  stars, and mark them unread, reading or finished (Edit details, or Mark
+  as finished in the book menu). They sync between devices.
+- **Search like Calibre.** The library filter understands `tag:`,
+  `author:`, `series:`, `rating:>=4`, `status:unread`, `format:manga` and
+  more, with `-` to leave things out. Library ⋯ → Search tips lists them.
+- **Edit many books at once.** Library ⋯ → Select books: set the author or
+  series (and number them in order), add or remove tags, set the rating or
+  status, or remove them, all together.
+- **Find duplicates.** Library ⋯ → Find duplicates finds identical files and
+  books added twice in different formats; keep one and the others' notes,
+  tags and place move to it.
+- **Find details online.** From a book's menu: look it up on Google Books
+  and Open Library and use the title, author and cover.
+- **More formats.** CBR, CB7 and folders of page images read as comics;
+  DRM-free MOBI and AZW3 (Kindle) books open in the reader.
+- **Convert.** Kindle books to EPUB and comics to CBZ, from the book menu,
+  keeping notes and place. The original file is left as it was.
+- **Share over Wi-Fi.** Settings → Share over Wi-Fi shows an address and a
+  PIN; open it in a browser on another device on the same Wi-Fi to browse
+  and download books. Off unless switched on.
+- Android 8.0 or newer is now needed.
+
 - **Folders are watched.** Folders added with Add folder (read in place on a
   phone; any folder on a computer) are checked for new books each time
   FicShelf opens, and with the new **Check folders** button in the Library.
