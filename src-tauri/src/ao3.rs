@@ -358,7 +358,11 @@ impl Ao3Client {
         Ok(parse_search_results(&html))
     }
 
-    pub async fn work_meta(&self, work_id: i64) -> Result<WorkMeta> {
+    /// A work's details from its first page. With `all_audio`, a
+    /// multi-chapter podfic also has its whole-work page read for every
+    /// chapter's audio; that is only wanted when saving, never for update
+    /// checks.
+    pub async fn work_meta(&self, work_id: i64, all_audio: bool) -> Result<WorkMeta> {
         let url = p::work_meta_url(work_id as u64);
         let html = self.get_text(&url).await?;
 
@@ -367,7 +371,7 @@ impl Ao3Client {
             // this page is only the first. One more paced request for the
             // whole work collects the rest. If it fails, chapter one's audio
             // is still kept.
-            if meta.chapters_posted > 1 && (meta.podfic || !meta.audio.is_empty()) {
+            if all_audio && meta.chapters_posted > 1 && (meta.podfic || !meta.audio.is_empty()) {
                 match self.get_text(&p::work_full_url(work_id as u64)).await {
                     Ok(full) => {
                         let all = page_audio(&Html::parse_document(&full));

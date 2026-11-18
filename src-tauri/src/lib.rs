@@ -1150,7 +1150,7 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
     ensure_session(&state).await;
 
     // Network first, lock afterwards.
-    let meta = state.ao3.work_meta(work_id).await.map_err(chain)?;
+    let meta = state.ao3.work_meta(work_id, true).await.map_err(chain)?;
     let mut bytes = state.ao3.download_epub(&meta).await.map_err(chain)?;
     // A podfic's player is not in AO3's download; add its audio back as a
     // page at the end. Failing that, the work is still saved as AO3 sent it.
@@ -1175,7 +1175,14 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
     // Keep the work id in the name so a re-download overwrites rather than
     // accumulating copies, and two works with the same title stay distinct.
     let path = dir.join(format!("{stem} [{work_id}].epub"));
-    std::fs::write(&path, &bytes).map_err(err)?;
+    // Written beside it, then swapped in whole: a re-save that is cut short
+    // never leaves a half-written book in place of the old copy.
+    let part = dir.join(format!(".{work_id}.epub.part"));
+    std::fs::write(&part, &bytes).map_err(err)?;
+    std::fs::rename(&part, &path).map_err(|e| {
+        std::fs::remove_file(&part).ok();
+        err(e)
+    })?;
 
     let path_str = path.to_string_lossy().to_string();
     let info = archive::read_epub(&path).ok();
@@ -1227,7 +1234,13 @@ async fn ao3_check_updates(state: State<'_, AppState>, limit: i64) -> Result<Upd
 
     for book in &candidates {
         let Some(work_id) = book.ao3_work_id else { continue };
-        match state.ao3.work_meta(work_id).await {
+        // AO3 said slow down or overloaded: stop here, not one refusal per
+        // remaining work. The rest are checked next time.
+        if state.ao3.cooldown_left().is_some() {
+            errors.push("Stopped early: AO3 asked FicShelf to slow down. The rest are checked next time.".into());
+            break;
+        }
+        match state.ao3.work_meta(work_id, false).await {
             Ok(meta) => {
                 checked += 1;
                 let seen = book.chapters_seen.unwrap_or(meta.chapters_posted as i64) as u32;

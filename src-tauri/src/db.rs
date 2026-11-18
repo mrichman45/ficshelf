@@ -666,11 +666,15 @@ pub fn works_to_check(conn: &Connection, limit: i64) -> Result<Vec<Book>> {
     let sql = format!(
         "SELECT {BOOK_COLUMNS} FROM books
          WHERE ao3_work_id IS NOT NULL AND complete = 0
+           AND COALESCE(last_checked_at, 0) <= ?2
          ORDER BY COALESCE(last_checked_at, 0) ASC
          LIMIT ?1"
     );
+    // A work checked in the last few hours is not asked about again yet:
+    // pressing Check twice should not mean twice the requests.
+    const RECHECK_AFTER: i64 = 4 * 60 * 60;
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![limit], row_to_book)?;
+    let rows = stmt.query_map(params![limit, now() - RECHECK_AFTER], row_to_book)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
