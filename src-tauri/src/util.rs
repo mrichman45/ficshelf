@@ -206,6 +206,29 @@ pub fn sniff_format(bytes: &[u8], name_hint: &str) -> Option<&'static str> {
     None
 }
 
+/// Whether version `a` ("1.0.1", "v1.2.0") is newer than `b`. Missing
+/// parts count as 0; anything after a "-" (pre-releases) is ignored.
+pub fn version_newer(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.trim()
+            .trim_start_matches(['v', 'V'])
+            .split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    }
+    let (x, y) = (parts(a), parts(b));
+    for i in 0..x.len().max(y.len()) {
+        let (p, q) = (x.get(i).copied().unwrap_or(0), y.get(i).copied().unwrap_or(0));
+        if p != q {
+            return p > q;
+        }
+    }
+    false
+}
+
 /// Audio file extensions FicShelf plays (podfics), as the canonical
 /// `&'static str` for an extension in any case.
 pub fn audio_ext(ext: &str) -> Option<&'static str> {
@@ -463,5 +486,15 @@ mod audio_sniff_tests {
         assert_eq!(kind_of_ext("M4B"), Some("audio"));
         assert_eq!(kind_of_ext("zip"), Some("cbz"));
         assert_eq!(kind_of_ext("mp4"), None);
+    }
+
+    #[test]
+    fn versions() {
+        assert!(version_newer("v1.0.1", "1.0.0"));
+        assert!(version_newer("1.1", "1.0.9"));
+        assert!(version_newer("1.0.0", "0.7.5"));
+        assert!(!version_newer("1.0.0", "1.0.0"));
+        assert!(!version_newer("0.9.9", "1.0.0"));
+        assert!(!version_newer("1.0.0-beta", "1.0.0"));
     }
 }

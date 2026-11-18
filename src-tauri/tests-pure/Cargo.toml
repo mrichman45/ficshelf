@@ -1,0 +1,18 @@
+# The app's dependency-free modules, built on their own so their tests run
+# in CI without building Tauri. Each module is the app's own source file,
+# compiled with `--cfg nodeps` (see .github/workflows/build.yml).
+[package]
+name = "ficshelf-pure-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(nodeps)'] }

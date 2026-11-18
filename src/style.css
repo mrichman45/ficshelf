@@ -1133,3 +1133,61 @@ html[data-motion="off"] .indeterminate .busy-fill { left: 0; width: 100% !import
 }
 .cooldown[hidden] { display: none; }
 .cooldown span { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------- update notice */
+
+.update-note {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.update-note[hidden] { display: none; }
+body.reading .update-note, body.reading .cooldown { display: none; }
+
+/* ------------------------------------------------------------- welcome */
+
+.welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.welcome[hidden] { display: none; }
+.welcome-card {
+  width: min(100%, 460px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 22px 22px 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  animation: welcome-in 0.2s ease-out;
+}
+.welcome-icon { font-size: 44px; text-align: center; }
+.welcome-card h2 { text-align: center; margin: 8px 0 12px; }
+.welcome-card p { line-height: 1.55; color: var(--ink); }
+.welcome-dots { display: flex; justify-content: center; gap: 8px; margin: 14px 0 10px; }
+.welcome-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.welcome-dots span.on { background: var(--accent); }
+.welcome-buttons { justify-content: space-between; }
+
+/* ------------------------------------------------------- accessibility */
+
+/* A clear ring for keyboard (and switch-access) users, not for taps. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus:not(:focus-visible) { outline: none; }
+@keyframes welcome-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}

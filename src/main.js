@@ -3529,6 +3529,169 @@ document.querySelectorAll("[data-storage]").forEach((b) =>
   }),
 );
 
+// ---------------------------------------------------- about and updates
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function checkForNewVersion({ quiet }) {
+  setPref("updateCheckedAt", String(Date.now()));
+  let u;
+  try {
+    u = await invoke("check_app_update");
+  } catch (e) {
+    if (!quiet) $("#about-status").textContent = `Could not check: ${e}`;
+    return;
+  }
+  if (!u.newer) {
+    if (!quiet) $("#about-status").textContent = `You have the newest version (${u.current}).`;
+    return;
+  }
+  if (!quiet) $("#about-status").textContent = `FicShelf ${u.latest} is available.`;
+  // "Later" on this version keeps it quiet until the next one.
+  if (quiet && pref("updateDismissed", "") === u.latest) return;
+  $("#app-update-text").textContent = `FicShelf ${u.latest} is available (you have ${u.current}).`;
+  $("#app-update").dataset.version = u.latest;
+  $("#app-update").dataset.download = u.download || u.page;
+  $("#app-update").dataset.page = u.page;
+  $("#app-update").hidden = false;
+}
+
+$("#app-update-get").addEventListener("click", () => {
+  invoke("open_link", { url: $("#app-update").dataset.download }).catch((e) => toast(String(e), true));
+  if (IS_ANDROID) toast("When the download finishes, open it and tap Update. Your library stays as it is.");
+});
+$("#app-update-notes").addEventListener("click", () =>
+  invoke("open_link", { url: $("#app-update").dataset.page }).catch((e) => toast(String(e), true)),
+);
+$("#app-update-later").addEventListener("click", () => {
+  setPref("updateDismissed", $("#app-update").dataset.version || "");
+  $("#app-update").hidden = true;
+});
+
+$("#auto-update-check").checked = pref("updateCheck", "on") !== "off";
+$("#auto-update-check").addEventListener("change", (e) => setPref("updateCheck", e.target.checked ? "on" : "off"));
+$("#btn-check-app").addEventListener("click", () => {
+  $("#about-status").textContent = "Checking…";
+  checkForNewVersion({ quiet: false });
+});
+$("#btn-whats-new").addEventListener("click", () => {
+  const v = appVersion ? `/tag/v${appVersion}` : "";
+  invoke("open_link", { url: `https://github.com/mrichman45/ficshelf/releases${v}` }).catch((e) =>
+    toast(String(e), true),
+  );
+});
+$("#btn-privacy").addEventListener("click", () =>
+  invoke("open_link", { url: "https://github.com/mrichman45/ficshelf/blob/main/PRIVACY.md" }).catch((e) =>
+    toast(String(e), true),
+  ),
+);
+getVersion()
+  .then((v) => ($("#about-version").textContent = v))
+  .catch(() => {});
+
+// Once a day at most, a little after starting.
+setTimeout(() => {
+  if (pref("updateCheck", "on") === "off") return;
+  if (Date.now() - Number(pref("updateCheckedAt", "0")) < DAY_MS) return;
+  checkForNewVersion({ quiet: true });
+}, 30_000);
+
+// Report a problem: the email app opens with everything filled in; she
+// reads it and presses Send herself.
+let reportAddress = false;
+invoke("report_available")
+  .then((ok) => (reportAddress = ok))
+  .catch(() => {});
+
+function problemReport() {
+  const list = readLog().slice(0, 15);
+  const platform = IS_ANDROID ? "Android" : navigator.userAgent.includes("Windows") ? "Windows" : "Linux";
+  const head = `FicShelf ${appVersion || "?"} on ${platform}\n${new Date().toString()}\n\nWhat happened (in your own words):\n\n\n`;
+  const log = list.length ? `Error log (newest first):\n\n${list.map(logLine).join("\n\n")}` : "Error log: empty.";
+  return head + log;
+}
+
+$("#btn-report").addEventListener("click", async () => {
+  const body = problemReport();
+  if (reportAddress) {
+    try {
+      await invoke("report_problem", { subject: `FicShelf problem report (${appVersion || "?"})`, body });
+      return;
+    } catch (e) {
+      logError("report a problem", e);
+    }
+  }
+  // No address in this build, or no email app: copy it instead.
+  try {
+    await navigator.clipboard.writeText(body);
+    toast("The report is copied. Paste it into a message to whoever set FicShelf up for you.");
+  } catch {
+    toast("Use Copy log under Error log, and send it to whoever set FicShelf up for you.", true);
+  }
+});
+
+// ------------------------------------------------------- accessibility
+//
+// Buttons that show only a symbol (☰ 🔖 ⋮ ▶) carry a title; screen readers
+// on phones read aria-label instead, so the label follows the title, for
+// buttons made later and for titles that change (▶ becoming ⏸).
+function labelFromTitle(el) {
+  if (el instanceof HTMLButtonElement && el.title && el.getAttribute("aria-label") !== el.title) {
+    el.setAttribute("aria-label", el.title);
+  }
+}
+document.querySelectorAll("button[title]").forEach(labelFromTitle);
+new MutationObserver((changes) => {
+  for (const c of changes) {
+    if (c.type === "attributes") labelFromTitle(c.target);
+    else c.addedNodes.forEach((n) => n instanceof Element && n.querySelectorAll?.("button[title]").forEach(labelFromTitle));
+    if (c.type === "childList") c.addedNodes.forEach((n) => labelFromTitle(n));
+  }
+}).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["title"] });
+
+// ------------------------------------------------------------- welcome
+
+const welcome = { step: 0 };
+
+function showWelcomeStep(i) {
+  welcome.step = i;
+  $$("#welcome .welcome-step").forEach((el) => (el.hidden = Number(el.dataset.step) !== i));
+  $$("#welcome .welcome-dots span").forEach((d, n) => d.classList.toggle("on", n === i));
+  $("#welcome-next").textContent = i === 2 ? "Start reading" : "Next";
+  $("#welcome-skip").hidden = i === 2;
+}
+
+function openWelcome() {
+  showWelcomeStep(0);
+  $("#welcome").hidden = false;
+  $("#welcome-next").focus();
+}
+
+function closeWelcome() {
+  $("#welcome").hidden = true;
+  setPref("welcomed", "1");
+}
+
+$("#welcome-next").addEventListener("click", () => (welcome.step < 2 ? showWelcomeStep(welcome.step + 1) : closeWelcome()));
+$("#welcome-skip").addEventListener("click", closeWelcome);
+$("#btn-welcome-again").addEventListener("click", openWelcome);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#welcome").hidden) closeWelcome();
+});
+
+// A fresh install (nothing in the library, never welcomed) gets it once.
+// Someone updating with books already in place does not.
+setTimeout(async () => {
+  if (pref("welcomed", "") === "1") return;
+  try {
+    const books = await invoke("list_books", { sort: "added" });
+    if (Array.isArray(books) && books.length === 0) openWelcome();
+    else setPref("welcomed", "1");
+  } catch {
+    /* try again next start */
+  }
+}, 400);
+
 // ------------------------------------------------------- backup/restore
 
 function ficshelfPrefs() {

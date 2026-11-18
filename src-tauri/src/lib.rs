@@ -1462,6 +1462,87 @@ fn ao3_cooldown(state: State<'_, AppState>) -> Option<Ao3Cooldown> {
         .or_else(|| state.ao3.save_wait().map(|seconds| Ao3Cooldown { seconds, reason: 1 }))
 }
 
+// ----------------------------------------------------- about and updates
+
+const RELEASES_API: &str = "https://api.github.com/repos/mrichman45/ficshelf/releases/latest";
+const RELEASES_PAGE: &str = "https://github.com/mrichman45/ficshelf/releases";
+
+#[derive(Serialize)]
+struct AppUpdate {
+    current: String,
+    latest: String,
+    newer: bool,
+    /// The release's page, for "What's new".
+    page: String,
+    /// The file for this kind of device, when there is one to fetch
+    /// directly (the APK on a phone, the installer on Windows).
+    download: Option<String>,
+}
+
+/// Ask GitHub (never AO3) for FicShelf's latest release. One small request,
+/// made at most once a day by the front end, or when asked.
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdate, String> {
+    let current = app.package_info().version.to_string();
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("FicShelf/", env!("CARGO_PKG_VERSION"), " (update check)"))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(err)?;
+    let resp = client
+        .get(RELEASES_API)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("could not reach GitHub: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub answered {}", resp.status()));
+    }
+    let text = resp.text().await.map_err(err)?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(err)?;
+    let latest = v["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+    let page = v["html_url"].as_str().unwrap_or(RELEASES_PAGE).to_string();
+    let wanted = if cfg!(target_os = "android") {
+        Some("_android-arm64.apk")
+    } else if cfg!(target_os = "windows") {
+        Some("-setup.exe")
+    } else {
+        None // Linux: the release page, for the right package
+    };
+    let download = wanted.and_then(|suffix| {
+        v["assets"].as_array()?.iter().find_map(|a| {
+            let name = a["name"].as_str()?;
+            name.ends_with(suffix).then(|| a["browser_download_url"].as_str().map(str::to_string))?
+        })
+    });
+    Ok(AppUpdate { newer: util::version_newer(&latest, &current), current, latest, page, download })
+}
+
+/// Where problem reports are sent, set when the app is built (the
+/// FICSHELF_REPORT_EMAIL repository secret).
+const REPORT_EMAIL: Option<&str> = option_env!("FICSHELF_REPORT_EMAIL");
+
+#[tauri::command]
+fn report_available() -> bool {
+    REPORT_EMAIL.is_some_and(|e| e.contains('@'))
+}
+
+/// Open her email app with a report addressed and filled in. Nothing is sent
+/// until she presses Send there.
+#[tauri::command]
+fn report_problem(app: tauri::AppHandle, subject: String, body: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let to = REPORT_EMAIL.filter(|e| e.contains('@')).ok_or("no report address is set up in this build")?;
+    let enc = |s: &str| percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string();
+    // Email apps cope with long bodies, but some systems cut mailto links
+    // short; keep it to the newest part of the log.
+    let body: String = body.chars().take(if cfg!(target_os = "windows") { 1800 } else { 6000 }).collect();
+    let url = format!("mailto:{}?subject={}&body={}", to.trim(), enc(&subject), enc(&body));
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("could not open an email app: {e}"))
+}
+
 // ---------------------------------------------------------------- backup
 
 /// Make a backup. `dest` is where to write it (from a save dialog); on a
@@ -1646,6 +1727,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            check_app_update,
+            report_available,
+            report_problem,
             ao3_cooldown,
             backup_make,
             backup_restore,

@@ -21,6 +21,21 @@ on:
     tags: ["v*"]
 
 jobs:
+  # The dependency-free parts (AO3 page reading, EPUB building, sync merging,
+  # podfic tags, cooldowns) have their own tests; a release is only published
+  # when they pass.
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run tests
+        working-directory: src-tauri/tests-pure
+        env:
+          RUSTFLAGS: --cfg nodeps
+        run: cargo test --lib
+
   desktop:
     name: ${{ matrix.label }}
     strategy:
@@ -73,6 +88,7 @@ jobs:
         env:
           FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
           FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
+          FICSHELF_REPORT_EMAIL: ${{ secrets.FICSHELF_REPORT_EMAIL }}
         with:
           args: --bundles ${{ matrix.bundles }}
 
@@ -142,6 +158,7 @@ jobs:
         env:
           FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
           FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
+          FICSHELF_REPORT_EMAIL: ${{ secrets.FICSHELF_REPORT_EMAIL }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           npm run tauri android init -- --ci
@@ -187,7 +204,7 @@ jobs:
     # tags the commit itself, for when a tag cannot be pushed from where you
     # are).
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
-    needs: [desktop, android]
+    needs: [tests, desktop, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -209,7 +226,13 @@ jobs:
           else
             TAG="v$(node -p "require('./package.json').version")"
           fi
-          cat > notes.md <<'EOF'
+          # This version's section of CHANGES.md, if it has one, goes first.
+          VERSION="${TAG#v}"
+          awk -v v="## $VERSION" '$0==v{on=1;next} /^## /{on=0} on' CHANGES.md > notes.md || true
+          if [ -s notes.md ]; then
+            { echo "## What's new"; cat notes.md; echo; } > notes.tmp && mv notes.tmp notes.md
+          fi
+          cat >> notes.md <<'EOF'
           ## Which file do I want?
 
           **Windows**

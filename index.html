@@ -21,6 +21,16 @@
     </nav>
     <div id="nav-scrim" hidden></div>
 
+    <!-- A newer FicShelf is out. -->
+    <div id="app-update" class="update-note" role="status" hidden>
+      <span id="app-update-text"></span>
+      <div class="row">
+        <button id="app-update-get" class="primary">Download</button>
+        <button id="app-update-notes">What's new</button>
+        <button id="app-update-later">Later</button>
+      </div>
+    </div>
+
     <!-- Shown on the AO3 screens while FicShelf is backing off. -->
     <div id="ao3-cooldown" class="cooldown" role="status" hidden>
       <strong>Giving AO3 a break</strong>
@@ -42,8 +52,8 @@
             <option value="title">Title</option>
             <option value="author">Author</option>
           </select>
-          <button id="sort-dir" title="Reverse the order"></button>
-          <button id="lib-layout" title="Grid or list"></button>
+          <button id="sort-dir" title="Reverse the order" aria-label="Reverse the order"></button>
+          <button id="lib-layout" title="Grid or list" aria-label="Grid or list"></button>
           <button id="btn-add-files">Add files…</button>
           <button id="btn-add-folder">Add folder…</button>
         </header>
@@ -61,7 +71,7 @@
       <!-- ------------------------------------------------- Podfic -->
       <section id="view-listen" class="view">
         <header class="bar listen-bar">
-          <button id="listen-back" class="icon" title="Back to the library">←</button>
+          <button id="listen-back" class="icon" title="Back to the library" aria-label="Back to the library">←</button>
           <span class="listen-label">Podfic</span>
         </header>
         <div class="listen">
@@ -71,13 +81,13 @@
           <input id="listen-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position" />
           <div class="listen-times"><span id="listen-now">0:00</span><span id="listen-left">0:00</span></div>
           <div class="listen-controls">
-            <button id="listen-back15" class="round" title="Back 15 seconds">↺ 15</button>
-            <button id="listen-play" class="round big" title="Play">▶</button>
-            <button id="listen-fwd30" class="round" title="Forward 30 seconds">30 ↻</button>
+            <button id="listen-back15" class="round" title="Back 15 seconds" aria-label="Back 15 seconds">↺ 15</button>
+            <button id="listen-play" class="round big" title="Play" aria-label="Play">▶</button>
+            <button id="listen-fwd30" class="round" title="Forward 30 seconds" aria-label="Forward 30 seconds">30 ↻</button>
           </div>
           <div class="listen-extras">
-            <button id="listen-speed" title="Playback speed">1×</button>
-            <button id="listen-sleep" title="Sleep timer">Sleep: off</button>
+            <button id="listen-speed" title="Playback speed" aria-label="Playback speed">1×</button>
+            <button id="listen-sleep" title="Sleep timer" aria-label="Sleep timer">Sleep: off</button>
           </div>
           <p id="listen-error" class="error" hidden></p>
         </div>
@@ -88,17 +98,17 @@
         <!-- The tap menu, after FBReader: a bar at the top and a panel at the
              bottom that slide in over the page together. -->
         <header class="bar">
-          <button id="reader-back" class="icon" title="Back to the library">←</button>
-          <button id="reader-toc" class="icon has-chapters" title="Chapters">☰</button>
+          <button id="reader-back" class="icon" title="Back to the library" aria-label="Back to the library">←</button>
+          <button id="reader-toc" class="icon has-chapters" title="Chapters" aria-label="Chapters">☰</button>
           <div class="reader-titles">
             <span id="reader-title" class="reader-title"></span>
             <span id="reader-author" class="reader-author"></span>
           </div>
           <span id="reader-progress" hidden></span>
-          <button id="reader-bookmark" class="icon" title="Bookmark this page">🔖</button>
-          <button id="reader-daynight" class="icon" title="Day / night">🌙</button>
-          <button id="reader-search" class="icon epub-only" title="Search in this book">🔍</button>
-          <button id="reader-more" class="icon" title="More">⋮</button>
+          <button id="reader-bookmark" class="icon" title="Bookmark this page" aria-label="Bookmark this page">🔖</button>
+          <button id="reader-daynight" class="icon" title="Day / night" aria-label="Day / night">🌙</button>
+          <button id="reader-search" class="icon epub-only" title="Search in this book" aria-label="Search in this book">🔍</button>
+          <button id="reader-more" class="icon" title="More" aria-label="More">⋮</button>
           <button id="reader-prev" class="desktop-only">‹ Page</button>
           <button id="reader-next" class="desktop-only">Page ›</button>
         </header>
@@ -118,19 +128,19 @@
              is hidden. -->
         <!-- FBReader-style status line: progress with chapter marks, then
              page, time and battery. Tap it to jump to a page. -->
-        <button id="reader-footer" hidden title="Go to a page">
+        <button id="reader-footer" hidden title="Go to a page" aria-label="Go to a page">
           <span id="foot-track"><span id="foot-fill"></span><span id="foot-ticks"></span></span>
           <span id="foot-text"></span>
         </button>
         <div id="reader-panel">
           <div class="panel-row">
-            <button id="chap-prev" class="icon has-chapters" title="Previous chapter">‹</button>
+            <button id="chap-prev" class="icon has-chapters" title="Previous chapter" aria-label="Previous chapter">‹</button>
             <span id="panel-where"></span>
-            <button id="chap-next" class="icon has-chapters" title="Next chapter">›</button>
+            <button id="chap-next" class="icon has-chapters" title="Next chapter" aria-label="Next chapter">›</button>
           </div>
           <div class="panel-row">
             <input id="page-range" type="range" min="1" max="1" step="1" aria-label="Page" />
-            <button id="panel-back" class="icon" title="Back to where you were" disabled>↶</button>
+            <button id="panel-back" class="icon" title="Back to where you were" disabled aria-label="Back to where you were">↶</button>
           </div>
         </div>
         <!-- Brightness: swipe up or down along the left edge. The page is
@@ -140,13 +150,13 @@
         <div id="dim-label" hidden></div>
         <!-- Shown while text is selected in an EPUB. -->
         <div id="select-bar" hidden>
-          <button class="swatch" data-color="yellow" title="Highlight yellow"></button>
-          <button class="swatch" data-color="green" title="Highlight green"></button>
-          <button class="swatch" data-color="blue" title="Highlight blue"></button>
-          <button class="swatch" data-color="pink" title="Highlight pink"></button>
+          <button class="swatch" data-color="yellow" title="Highlight yellow" aria-label="Highlight yellow"></button>
+          <button class="swatch" data-color="green" title="Highlight green" aria-label="Highlight green"></button>
+          <button class="swatch" data-color="blue" title="Highlight blue" aria-label="Highlight blue"></button>
+          <button class="swatch" data-color="pink" title="Highlight pink" aria-label="Highlight pink"></button>
           <button id="select-note">Note</button>
           <button id="select-lookup">Look up</button>
-          <button id="select-cancel" title="Cancel">✕</button>
+          <button id="select-cancel" title="Cancel" aria-label="Cancel">✕</button>
         </div>
       </section>
 
@@ -438,6 +448,28 @@
           <p id="backup-auto" class="muted"></p>
         </div>
 
+        <div class="setting" id="about">
+          <h3>About FicShelf</h3>
+          <p>FicShelf <span id="about-version"></span></p>
+          <div class="row">
+            <button id="btn-report">Report a problem</button>
+            <button id="btn-check-app">Check for a new version</button>
+          </div>
+          <div class="row">
+            <button id="btn-whats-new">What's new</button>
+            <button id="btn-privacy">Privacy policy</button>
+            <button id="btn-welcome-again">Show the welcome again</button>
+          </div>
+          <label class="check"><input type="checkbox" id="auto-update-check" /> Check for new versions once a day</label>
+          <p id="about-status" class="muted"></p>
+          <p class="muted">
+            <strong>Report a problem</strong> opens your email app with the
+            error log filled in, addressed to whoever set FicShelf up for you.
+            Nothing is sent until you press Send, so you can read it (and
+            remove anything) first.
+          </p>
+        </div>
+
         <div class="setting">
           <h3>Error log</h3>
           <p class="muted">
@@ -457,8 +489,8 @@
 
     <!-- What is playing, while she browses elsewhere. -->
     <div id="mini-player" hidden>
-      <button id="mini-open" class="mini-open"><span id="mini-title"></span><span id="mini-time"></span></button>
-      <button id="mini-play" class="icon" title="Play or pause">▶</button>
+      <button id="mini-open" class="mini-open" aria-label="Open the podfic player"><span id="mini-title"></span><span id="mini-time"></span></button>
+      <button id="mini-play" class="icon" title="Play or pause" aria-label="Play or pause">▶</button>
     </div>
     <audio id="listen-audio" preload="metadata"></audio>
 
@@ -612,10 +644,10 @@
     <dialog id="note-sheet" class="sheet">
       <blockquote id="note-excerpt"></blockquote>
       <div class="row swatches" id="note-colors">
-        <button class="swatch" data-color="yellow" title="Yellow"></button>
-        <button class="swatch" data-color="green" title="Green"></button>
-        <button class="swatch" data-color="blue" title="Blue"></button>
-        <button class="swatch" data-color="pink" title="Pink"></button>
+        <button class="swatch" data-color="yellow" title="Yellow" aria-label="Yellow"></button>
+        <button class="swatch" data-color="green" title="Green" aria-label="Green"></button>
+        <button class="swatch" data-color="blue" title="Blue" aria-label="Blue"></button>
+        <button class="swatch" data-color="pink" title="Pink" aria-label="Pink"></button>
       </div>
       <textarea id="note-text" rows="4" placeholder="Add a note…"></textarea>
       <div class="row">
@@ -628,5 +660,33 @@
 
     <div id="toast" hidden></div>
     <script type="module" src="/src/main.js"></script>
+    <!-- First run: three short steps. -->
+    <div id="welcome" class="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
+      <div class="welcome-card">
+        <div class="welcome-step" data-step="0">
+          <div class="welcome-icon" aria-hidden="true">📚</div>
+          <h2 id="welcome-title">Welcome to FicShelf</h2>
+          <p>Your reading library for EPUB books, PDFs, comics and manga, and podfics.</p>
+          <p>Start with <strong>Add files…</strong> or <strong>Add folder…</strong> in the Library. Folders inside folders become series.</p>
+        </div>
+        <div class="welcome-step" data-step="1" hidden>
+          <div class="welcome-icon" aria-hidden="true">🔎</div>
+          <h2>Fanfiction from AO3</h2>
+          <p><strong>Search AO3</strong> to find works and save them, or paste a work's link.</p>
+          <p>Sign in under Settings to bring in your Bookmarks and Marked for Later. FicShelf saves gently: one at a time, and it backs off if AO3 asks.</p>
+        </div>
+        <div class="welcome-step" data-step="2" hidden>
+          <div class="welcome-icon" aria-hidden="true">🛟</div>
+          <h2>Keep your place safe</h2>
+          <p><strong>Sync between devices</strong> (Settings) carries your place, highlights and notes to your other phone or computer through your own Google Drive.</p>
+          <p>A backup of your reading data is also made every week. You'll find it under Settings → Backup and restore.</p>
+        </div>
+        <div class="welcome-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="row welcome-buttons">
+          <button id="welcome-skip">Skip</button>
+          <button id="welcome-next" class="primary">Next</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

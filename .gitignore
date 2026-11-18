@@ -9,3 +9,4 @@ src-tauri/gen/
 *.jks
 *.keystore
 keystore.properties
+src-tauri/tests-pure/target/

@@ -60,6 +60,9 @@ MEMBERS = f"""
     // console. It only works with USB debugging switched on in the phone's
     // developer options, so it opens nothing to anyone else.
     WebView.setWebContentsDebuggingEnabled(true)
+    // Follow the phone's own text-size setting (Settings → Display → Font
+    // size), within limits the layout is built for.
+    webView.settings.textZoom = (resources.configuration.fontScale * 100f).toInt().coerceIn(85, 130)
     webView.addJavascriptInterface(object {{
       @JavascriptInterface
       fun setVolumePaging(on: Boolean) {{ ficshelfVolumePaging = on }}
