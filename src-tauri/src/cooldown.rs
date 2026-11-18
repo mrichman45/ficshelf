@@ -102,6 +102,45 @@ pub fn describe(secs: i64) -> String {
     }
 }
 
+/// At most this many works saved in any hour.
+pub const SAVES_PER_HOUR: usize = 30;
+const HOUR: i64 = 60 * 60;
+
+/// When works were saved in the last hour, for the hourly limit.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Budget {
+    times: Vec<i64>,
+}
+
+impl Budget {
+    fn prune(&mut self, now: i64) {
+        self.times.retain(|t| *t > now - HOUR && *t <= now);
+    }
+
+    /// Seconds until another save is allowed, if the limit is reached.
+    pub fn wait(&mut self, now: i64) -> Option<i64> {
+        self.prune(now);
+        if self.times.len() < SAVES_PER_HOUR {
+            return None;
+        }
+        let oldest = *self.times.iter().min()?;
+        Some((oldest + HOUR - now).max(1))
+    }
+
+    pub fn record(&mut self, now: i64) {
+        self.prune(now);
+        self.times.push(now);
+    }
+
+    pub fn to_line(&self) -> String {
+        self.times.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" ")
+    }
+
+    pub fn from_line(s: &str) -> Budget {
+        Budget { times: s.split_whitespace().filter_map(|x| x.parse().ok()).take(1000).collect() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +204,19 @@ mod tests {
         assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
         assert_eq!(describe(65), "1:05");
         assert_eq!(describe(1800), "30 min");
+    }
+
+    #[test]
+    fn hourly_budget() {
+        let mut b = Budget::default();
+        for i in 0..SAVES_PER_HOUR as i64 {
+            assert_eq!(b.wait(1000 + i), None);
+            b.record(1000 + i);
+        }
+        // Full: the next one waits until the first is an hour old.
+        assert_eq!(b.wait(1100), Some(1000 + 3600 - 1100));
+        assert_eq!(b.wait(1000 + 3600), None);
+        let line = b.to_line();
+        assert_eq!(Budget::from_line(&line), b);
     }
 }

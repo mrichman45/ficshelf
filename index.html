@@ -407,6 +407,9 @@
             need you to be signed in above. If AO3 ever says to slow down or
             that it is overloaded, FicShelf stops asking for a while (5 minutes,
             longer if it happens again) and shows how long on the AO3 screens.
+            It also saves at most 30 works an hour, and stops signing in by
+            itself after two refused passwords, so the account is never locked
+            by mistake.
           </p>
         </div>
 
@@ -432,6 +435,7 @@
             if the phone is lost or reset.
           </p>
           <p id="backup-status" class="muted"></p>
+          <p id="backup-auto" class="muted"></p>
         </div>
 
         <div class="setting">

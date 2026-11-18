@@ -991,9 +991,55 @@ async fn ensure_session(state: &AppState) -> Option<String> {
         Ok(None) => return None,
         Err(e) => return Some(format!("Could not read the saved password: {e}")),
     };
+    // After two refusals in a row, stop signing in by itself: AO3 locks an
+    // account after repeated failures, and a saved password that stopped
+    // working (changed on the website, say) would keep failing every time.
+    if login_failures(state) >= AUTO_SIGN_IN_LIMIT {
+        return Some(
+            "Automatic sign-in is paused after two failed attempts. Check your password under \
+             Settings → Your AO3 account."
+                .into(),
+        );
+    }
     match state.ao3.login(&username, &password).await {
-        Ok(()) => None,
-        Err(e) => Some(format!("Could not sign in to AO3: {}", chain(e))),
+        Ok(()) => {
+            set_login_failures(state, 0);
+            None
+        }
+        Err(e) => {
+            let msg = chain(e);
+            if msg.starts_with(LOGIN_REJECTED) {
+                set_login_failures(state, login_failures(state) + 1);
+            }
+            Some(format!("Could not sign in to AO3: {msg}"))
+        }
+    }
+}
+
+/// How AO3's refusal of a username or password begins (see ao3::login).
+const LOGIN_REJECTED: &str = "AO3 did not accept";
+/// Refusals in a row after which automatic sign-in stops.
+const AUTO_SIGN_IN_LIMIT: i64 = 2;
+/// Refusals in a row after which even signing in by hand waits a while.
+const MANUAL_SIGN_IN_LIMIT: i64 = 4;
+const MANUAL_SIGN_IN_WAIT: i64 = 15 * 60;
+
+fn login_failures(state: &AppState) -> i64 {
+    state
+        .conn
+        .lock()
+        .ok()
+        .and_then(|c| db::get_setting(&c, "ao3_login_failures").ok().flatten())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+fn set_login_failures(state: &AppState, n: i64) {
+    if let Ok(c) = state.conn.lock() {
+        db::set_setting(&c, "ao3_login_failures", &n.to_string()).ok();
+        if n > 0 {
+            db::set_setting(&c, "ao3_login_failed_at", &db::now().to_string()).ok();
+        }
     }
 }
 
@@ -1008,8 +1054,41 @@ async fn ao3_sign_in(
         return Err("Both the username and the password are needed.".into());
     }
 
+    // Several refusals in a row: wait before trying again, so a run of
+    // typos cannot get the account locked by AO3.
+    let failures = login_failures(&state);
+    if failures >= MANUAL_SIGN_IN_LIMIT {
+        let last: i64 = {
+            let conn = state.conn.lock().map_err(err)?;
+            db::get_setting(&conn, "ao3_login_failed_at")
+                .map_err(chain)?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        };
+        let left = last + MANUAL_SIGN_IN_WAIT - db::now();
+        if left > 0 {
+            return Err(format!(
+                "AO3 has refused the last {failures} sign-ins. To keep the account from being \
+                 locked, FicShelf waits {} before trying again. If you have forgotten the \
+                 password, reset it on the AO3 website.",
+                cooldown::describe(left)
+            ));
+        }
+    }
+
     // Try the credentials before storing them, so a typo is never saved.
-    state.ao3.login(&username, &password).await.map_err(chain)?;
+    if let Err(e) = state.ao3.login(&username, &password).await {
+        let msg = chain(e);
+        if msg.starts_with(LOGIN_REJECTED) {
+            set_login_failures(&state, failures + 1);
+            let left = AUTO_SIGN_IN_LIMIT.max(MANUAL_SIGN_IN_LIMIT) - (failures + 1);
+            if left > 0 && failures + 1 >= AUTO_SIGN_IN_LIMIT {
+                return Err(format!("{msg} ({left} more tries before FicShelf waits 15 minutes.)"));
+            }
+        }
+        return Err(msg);
+    }
+    set_login_failures(&state, 0);
 
     if creds::SUPPORTED {
         creds::store(&username, &password).map_err(chain)?;
@@ -1149,9 +1228,20 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
     // registered users are reachable.
     ensure_session(&state).await;
 
+    // The hourly limit is checked before anything is asked of AO3.
+    if let Some(wait) = state.ao3.save_wait() {
+        return Err(format!(
+            "FicShelf has saved {} works in the last hour, its limit to stay friendly with AO3. \
+             Saving is paused for {}; searching and reading still work.",
+            cooldown::SAVES_PER_HOUR,
+            cooldown::describe(wait)
+        ));
+    }
+
     // Network first, lock afterwards.
     let meta = state.ao3.work_meta(work_id, true).await.map_err(chain)?;
     let mut bytes = state.ao3.download_epub(&meta).await.map_err(chain)?;
+    state.ao3.record_save();
     // A podfic's player is not in AO3's download; add its audio back as a
     // page at the end. Failing that, the work is still saved as AO3 sent it.
     if !meta.audio.is_empty() {
@@ -1361,9 +1451,15 @@ struct Ao3Cooldown {
     reason: u16,
 }
 
+/// `reason` 429 or 503 for AO3's own answers, 1 for FicShelf's hourly
+/// limit on saving works.
 #[tauri::command]
 fn ao3_cooldown(state: State<'_, AppState>) -> Option<Ao3Cooldown> {
-    state.ao3.cooldown_left().map(|(seconds, reason)| Ao3Cooldown { seconds, reason })
+    state
+        .ao3
+        .cooldown_left()
+        .map(|(seconds, reason)| Ao3Cooldown { seconds, reason })
+        .or_else(|| state.ao3.save_wait().map(|seconds| Ao3Cooldown { seconds, reason: 1 }))
 }
 
 // ---------------------------------------------------------------- backup
@@ -1403,6 +1499,81 @@ async fn backup_make(
     })
     .await
     .map_err(err)?
+}
+
+#[derive(Serialize)]
+struct AutoBackup {
+    /// Unix seconds of the newest automatic backup, 0 if none yet.
+    last: i64,
+    /// Where automatic backups go.
+    dir: String,
+    /// True if one was made just now.
+    made: bool,
+}
+
+const AUTO_BACKUP_EVERY: i64 = 7 * 24 * 60 * 60;
+const AUTO_BACKUPS_KEPT: usize = 4;
+
+/// The weekly automatic backup of reading data (no book files). Called when
+/// the app starts; makes one only if the last is a week old. The newest four
+/// are kept. On a phone they go to Download/FicShelf/Automatic backups, which
+/// survives the app being reinstalled; failing that, into the app's own
+/// storage.
+#[tauri::command]
+async fn backup_auto(app: tauri::AppHandle, prefs: serde_json::Value) -> Result<AutoBackup, String> {
+    let data_dir = app.path().app_data_dir().map_err(err)?;
+    let last: i64 = {
+        let state = app.state::<AppState>();
+        let conn = state.conn.lock().map_err(err)?;
+        db::get_setting(&conn, "auto_backup_at").map_err(chain)?.and_then(|v| v.parse().ok()).unwrap_or(0)
+    };
+    let mut dirs = Vec::new();
+    if cfg!(target_os = "android") {
+        dirs.push(PathBuf::from("/storage/emulated/0/Download/FicShelf/Automatic backups"));
+    }
+    dirs.push(data_dir.join("Backups"));
+    let usable = dirs
+        .iter()
+        .find(|d| std::fs::create_dir_all(d).is_ok() && std::fs::write(d.join(".ficshelf-test"), b"ok").is_ok())
+        .cloned()
+        .unwrap_or_else(|| data_dir.join("Backups"));
+    std::fs::remove_file(usable.join(".ficshelf-test")).ok();
+
+    if db::now() - last < AUTO_BACKUP_EVERY {
+        return Ok(AutoBackup { last, dir: usable.to_string_lossy().into_owned(), made: false });
+    }
+
+    let day = epubgen::iso_utc(db::now()).get(..10).unwrap_or("backup").to_string();
+    let dest = usable.join(format!("FicShelf auto {day}.zip"));
+    let version = app.package_info().version.to_string();
+    let handle = app.clone();
+    let dir = usable.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = handle.state::<AppState>();
+        let library_dir = state.library_dir.lock().map_err(err)?.clone();
+        backup::make(&state.conn, &data_dir, &library_dir, &dest, false, prefs, &version, |_, _| {})
+            .map_err(chain)?;
+        // Keep the newest few.
+        let mut autos: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map_err(err)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("FicShelf auto ") && n.to_string_lossy().ends_with(".zip"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        autos.sort();
+        while autos.len() > AUTO_BACKUPS_KEPT {
+            std::fs::remove_file(autos.remove(0)).ok();
+        }
+        let conn = state.conn.lock().map_err(err)?;
+        db::set_setting(&conn, "auto_backup_at", &db::now().to_string()).map_err(chain)?;
+        Ok(())
+    })
+    .await
+    .map_err(err)??;
+    Ok(AutoBackup { last: db::now(), dir: usable.to_string_lossy().into_owned(), made: true })
 }
 
 /// Restore from a backup file (a path, or a content:// URI on a phone).
@@ -1478,6 +1649,7 @@ pub fn run() {
             ao3_cooldown,
             backup_make,
             backup_restore,
+            backup_auto,
             set_phone_storage,
             save_podfic_url,
             import_paths,

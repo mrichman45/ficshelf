@@ -221,6 +221,12 @@ This matters more than the features, so it is written down rather than assumed.
   to 30 and 10 minutes. The pause survives restarting the app, and the AO3
   screens count it down. Neither answer is ever retried, and a 503 on a
   download does not fall back to the HTML download.
+- **At most 30 works are saved in any hour**, a backstop for long queueing
+  sessions; the limit counts across restarts.
+- **Sign-in stops after refusals.** Two refused passwords in a row stop
+  automatic sign-in until the password is checked in Settings; four stop
+  even manual attempts for 15 minutes, so typos cannot get the account
+  locked.
 - **The user agent identifies the app honestly**, so AO3 can recognise and
   block it specifically if they ever wish to.
 - **Nothing is cached, re-hosted or shared.** Downloads go to your folder and

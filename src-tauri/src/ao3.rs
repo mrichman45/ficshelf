@@ -127,6 +127,8 @@ pub struct Ao3Client {
     /// file so closing the app does not skip the wait.
     cooldown: Arc<std::sync::Mutex<crate::cooldown::Cooldown>>,
     cooldown_file: Arc<Option<std::path::PathBuf>>,
+    /// Works saved in the last hour, for the hourly limit; kept on disk too.
+    budget: Arc<std::sync::Mutex<crate::cooldown::Budget>>,
 }
 
 impl Ao3Client {
@@ -136,7 +138,13 @@ impl Ao3Client {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .map(|line| crate::cooldown::Cooldown::from_line(&line))
             .unwrap_or_default();
+        let budget = cooldown_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f.with_extension("saves")).ok())
+            .map(|line| crate::cooldown::Budget::from_line(&line))
+            .unwrap_or_default();
         Ok(Self {
+            budget: Arc::new(std::sync::Mutex::new(budget)),
             http: Arc::new(std::sync::RwLock::new(build_http()?)),
             last_request: Arc::new(Mutex::new(None)),
             logged_in: Arc::new(Mutex::new(false)),
@@ -150,6 +158,21 @@ impl Ao3Client {
     pub fn cooldown_left(&self) -> Option<(i64, u16)> {
         let c = self.cooldown.lock().unwrap_or_else(|p| p.into_inner());
         c.remaining(crate::db::now()).map(|s| (s, c.reason))
+    }
+
+    /// Seconds until another work may be saved, if the hourly limit is
+    /// reached.
+    pub fn save_wait(&self) -> Option<i64> {
+        self.budget.lock().unwrap_or_else(|p| p.into_inner()).wait(crate::db::now())
+    }
+
+    /// Count a saved work against the hourly limit.
+    pub fn record_save(&self) {
+        let mut b = self.budget.lock().unwrap_or_else(|p| p.into_inner());
+        b.record(crate::db::now());
+        if let Some(f) = self.cooldown_file.as_ref() {
+            std::fs::write(f.with_extension("saves"), b.to_line()).ok();
+        }
     }
 
     /// The message for a request refused because of a cooldown, or None.

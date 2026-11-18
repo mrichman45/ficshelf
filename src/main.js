@@ -316,13 +316,17 @@ function renderCooldown() {
   banner.hidden = !(left > 0 && onAo3);
   const m = Math.floor(left / 60);
   const sec = String(left % 60).padStart(2, "0");
+  const limitOnly = cooldown.reason === 1;
+  banner.querySelector("strong").textContent = limitOnly ? "Hourly limit reached" : "Giving AO3 a break";
   document.getElementById("ao3-cooldown-text").textContent =
     cooldown.reason === 503
       ? `AO3 is overloaded. Trying again is paused for ${m}:${sec}.`
-      : `AO3 asked FicShelf to slow down. Searching and saving are paused for ${m}:${sec}.`;
+      : limitOnly
+        ? `FicShelf has saved 30 works this hour. Saving resumes in ${m}:${sec}; searching still works.`
+        : `AO3 asked FicShelf to slow down. Searching and saving are paused for ${m}:${sec}.`;
   for (const id of ["btn-ao3-search", "btn-search-more"]) {
     const b = document.getElementById(id);
-    if (b) b.disabled = left > 0;
+    if (b) b.disabled = left > 0 && !limitOnly;
   }
   clearTimeout(cooldown.timer);
   if (left > 0) cooldown.timer = setTimeout(renderCooldown, 1000);
@@ -3364,7 +3368,7 @@ async function runQueue() {
         item.error = typeof e === "string" ? e : String(e);
         // AO3 telling us to slow down, or the session going away, ends the
         // run outright. Carrying on would be exactly the wrong response.
-        if (/slow down|429|signed us out|sign in/i.test(item.error)) {
+        if (/slow down|overloaded|paused|hourly|limit|429|signed us out|sign in/i.test(item.error)) {
           halted = item.error;
           break;
         }
@@ -3574,6 +3578,20 @@ async function makeBackup(withBooks) {
     busy($("#task-panel"), false);
   }
 }
+
+/// The weekly automatic backup of reading data: checked a little after the
+/// app starts (so it never slows the start), and shown in Settings.
+async function autoBackup() {
+  try {
+    const r = await invoke("backup_auto", { prefs: ficshelfPrefs() });
+    const when = r.last ? new Date(r.last * 1000).toLocaleDateString() : "not yet";
+    $("#backup-auto").textContent = `Automatic weekly backup of reading data: last ${when}, kept in ${r.dir} (newest four).`;
+  } catch (e) {
+    logError("automatic backup", e);
+    $("#backup-auto").textContent = `The automatic weekly backup failed: ${e}`;
+  }
+}
+setTimeout(autoBackup, 20_000);
 
 $("#btn-backup-data").addEventListener("click", () => makeBackup(false));
 $("#btn-backup-all").addEventListener("click", () => makeBackup(true));
