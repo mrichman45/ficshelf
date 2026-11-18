@@ -119,6 +119,11 @@ MEMBERS = f"""
     return null
   }}
 
+  // Books, comics and podfic audio.
+  private val ficshelfImportable = setOf(
+    "epub", "pdf", "cbz", "zip",
+    "mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "wav")
+
   private fun ficshelfListTree(tree: Uri, parentId: String, folder: String, depth: Int, out: JSONArray) {{
     if (depth > 8 || out.length() >= 5000) return
     val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -136,8 +141,8 @@ MEMBERS = f"""
           dirs.add(Pair(id, name))
         }} else {{
           val lower = name.lowercase()
-          if (lower.endsWith(".epub") || lower.endsWith(".pdf") ||
-              lower.endsWith(".cbz") || lower.endsWith(".zip")) {{
+          val ext = lower.substringAfterLast('.', "")
+          if (ext in ficshelfImportable) {{
             val item = JSONObject()
             item.put("uri", DocumentsContract.buildDocumentUriUsingTree(tree, id).toString())
             item.put("name", name)

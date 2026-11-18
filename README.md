@@ -17,6 +17,12 @@ Covers, titles and series are read out of EPUBs (Calibre and EPUB 3 series
 tags) and comics (`ComicInfo.xml`) automatically; comics use their first page
 as a cover; PDFs get one the first time you open them.
 
+**Podfics** — audio files (MP3, M4B/M4A, AAC, Ogg/Opus, FLAC, WAV) sit in
+the library beside books, with the title, reader and cover art read from
+their tags. The player has 15/30-second skips, speed from 0.75× to 2.5×, a
+sleep timer, and keeps playing (with a small bar at the bottom) while you
+browse. Its place is saved and synced like a reading position.
+
 **Series** — the Library's second tab groups books by series, or by the
 folder they were added from when they have none, in reading order.
 

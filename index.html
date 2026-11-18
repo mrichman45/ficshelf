@@ -42,9 +42,34 @@
         </div>
         <div id="shelf" class="shelf"></div>
         <p id="library-empty" class="empty" hidden>
-          Nothing here yet. Use <strong>Add files…</strong> for EPUB, PDF or CBZ
-          files you already have, or <strong>Search AO3</strong> to save a work.
+          Nothing here yet. Use <strong>Add files…</strong> for EPUB, PDF and CBZ
+          files or podfic audio (MP3, M4B…) you already have, or <strong>Search AO3</strong> to save a work.
         </p>
+      </section>
+
+      <!-- ------------------------------------------------- Podfic -->
+      <section id="view-listen" class="view">
+        <header class="bar listen-bar">
+          <button id="listen-back" class="icon" title="Back to the library">←</button>
+          <span class="listen-label">Podfic</span>
+        </header>
+        <div class="listen">
+          <div id="listen-art" class="listen-art"><span>🎧</span></div>
+          <h2 id="listen-title"></h2>
+          <p id="listen-author" class="listen-author"></p>
+          <input id="listen-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position" />
+          <div class="listen-times"><span id="listen-now">0:00</span><span id="listen-left">0:00</span></div>
+          <div class="listen-controls">
+            <button id="listen-back15" class="round" title="Back 15 seconds">↺ 15</button>
+            <button id="listen-play" class="round big" title="Play">▶</button>
+            <button id="listen-fwd30" class="round" title="Forward 30 seconds">30 ↻</button>
+          </div>
+          <div class="listen-extras">
+            <button id="listen-speed" title="Playback speed">1×</button>
+            <button id="listen-sleep" title="Sleep timer">Sleep: off</button>
+          </div>
+          <p id="listen-error" class="error" hidden></p>
+        </div>
       </section>
 
       <!-- -------------------------------------------------- Reader -->
@@ -238,6 +263,11 @@
             Page turns and menus slide gently. System follows your device's
             reduce-motion setting.
           </p>
+          <label>Clock while reading</label>
+          <div class="tabs" role="radiogroup" id="clock-picker">
+            <button data-clock-choice="12" role="radio">12-hour (2:30 PM)</button>
+            <button data-clock-choice="24" role="radio">24-hour (14:30)</button>
+          </div>
         </div>
 
         <div class="setting" id="sync-setting">
@@ -350,6 +380,13 @@
         </div>
       </section>
     </main>
+
+    <!-- What is playing, while she browses elsewhere. -->
+    <div id="mini-player" hidden>
+      <button id="mini-open" class="mini-open"><span id="mini-title"></span><span id="mini-time"></span></button>
+      <button id="mini-play" class="icon" title="Play or pause">▶</button>
+    </div>
+    <audio id="listen-audio" preload="metadata"></audio>
 
     <!-- Long-press (phone) or right-click (desktop) on a cover. -->
     <dialog id="book-menu" class="sheet">

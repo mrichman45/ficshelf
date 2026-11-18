@@ -8,6 +8,7 @@
 mod ao3;
 mod ao3_parse;
 mod archive;
+mod audiometa;
 mod creds;
 mod db;
 mod epubgen;
@@ -75,13 +76,7 @@ pub struct UpdateReport {
 // ---------------------------------------------------------------- helpers
 
 fn format_of(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-    match ext.as_str() {
-        "epub" => Some("epub"),
-        "pdf" => Some("pdf"),
-        "cbz" | "zip" => Some("cbz"),
-        _ => None,
-    }
+    util::kind_of_ext(&path.extension()?.to_string_lossy())
 }
 
 fn stem_title(path: &Path) -> String {
@@ -106,7 +101,7 @@ fn parent_name(path: &Path) -> Option<String> {
 /// FicShelf cannot open it, but lists it and hands it to an app that can.
 fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) -> Result<db::Book> {
     let format = format_of(path)
-        .ok_or_else(|| anyhow::anyhow!("{} is not an EPUB, PDF or CBZ", path.display()))?;
+        .ok_or_else(|| anyhow::anyhow!("{} is not an EPUB, PDF, CBZ or audio file", path.display()))?;
 
     if !path.exists() {
         anyhow::bail!("{} does not exist", path.display());
@@ -150,6 +145,16 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
                 series = info.series;
                 series_index = info.number;
             }
+        }
+        "audio" => {
+            // A podfic: the tags give the title, the reader (as author) and
+            // cover art when they are there.
+            let tags = audiometa::read_tags(path);
+            if let Some(t) = tags.title.filter(|t| !t.trim().is_empty()) {
+                title = t;
+            }
+            author = tags.artist;
+            cover = tags.cover;
         }
         _ => {
             drm = archive::pdf_drm(path).unwrap_or(None);
@@ -278,7 +283,7 @@ async fn import_bytes(
 
     let name = util::name_from_uri(&source);
     let format = util::sniff_format(bytes, name.as_deref().unwrap_or(""))
-        .ok_or_else(|| "that is not an EPUB, PDF or CBZ file".to_string())?;
+        .ok_or_else(|| "that is not an EPUB, PDF, CBZ or audio file".to_string())?;
 
     let stem = name
         .as_deref()
@@ -339,7 +344,7 @@ async fn import_uri(
     }
     let name = util::name_from_uri(&uri);
     let format = util::sniff_format(&head[..got], name.as_deref().unwrap_or(""))
-        .ok_or_else(|| "that is not an EPUB, PDF or CBZ file".to_string())?;
+        .ok_or_else(|| "that is not an EPUB, PDF, CBZ or audio file".to_string())?;
 
     let dir = { state.library_dir.lock().map_err(err)?.join("Imported") };
     std::fs::create_dir_all(&dir).map_err(err)?;

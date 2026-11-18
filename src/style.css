@@ -912,3 +912,92 @@ html:not(.android) #dim-edge,
   -webkit-user-select: all;
 }
 #sync-buttons button[hidden] { display: none; }
+
+/* ------------------------------------------------------------- podfic */
+
+.listen-bar { margin-bottom: 4px; }
+.listen-label { color: var(--ink-dim); }
+.listen {
+  max-width: 460px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: center;
+  gap: 10px;
+}
+.listen-art {
+  width: min(70vw, 300px);
+  aspect-ratio: 1;
+  margin: 8px auto 6px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 72px;
+}
+.listen-art img { width: 100%; height: 100%; object-fit: cover; }
+.listen h2 { margin: 4px 0 0; font-size: 1.25rem; line-height: 1.3; }
+.listen-author { margin: 0; color: var(--ink-dim); }
+#listen-seek { width: 100%; accent-color: var(--accent); margin-top: 8px; }
+.listen-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+  margin-top: -4px;
+}
+.listen-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 22px;
+  margin: 6px 0;
+}
+.listen .round {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.listen .round.big {
+  width: 76px;
+  height: 76px;
+  font-size: 1.8rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+.listen-extras { display: flex; justify-content: center; gap: 10px; }
+.listen-extras button { min-width: 7.5em; }
+
+#mini-player {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+#mini-player[hidden] { display: none; }
+.mini-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: none;
+  border: none;
+  text-align: left;
+  color: var(--ink);
+  padding: 2px 4px;
+}
+#mini-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#mini-time { font-size: 0.8rem; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+#mini-play { font-size: 1.2rem; }

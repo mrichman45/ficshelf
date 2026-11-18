@@ -220,6 +220,7 @@ function show(view) {
   if (view === "bookmarks" && !shelfState.loadedOnce) loadShelf(true);
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
 }
 
 $$("#nav button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
@@ -403,7 +404,7 @@ function bookCard(book, { showNumber = false } = {}) {
 
   const fmt = document.createElement("span");
   fmt.className = "fmt";
-  fmt.textContent = book.format;
+  fmt.textContent = book.format === "audio" ? "🎧 podfic" : book.format;
   card.appendChild(fmt);
 
   if (book.drm) {
@@ -436,6 +437,7 @@ function bookCard(book, { showNumber = false } = {}) {
       return;
     }
     if (book.drm) openLocked(book);
+    else if (book.format === "audio") openPodfic(book);
     else openBook(book.id);
   });
   if (IS_ANDROID) {
@@ -701,7 +703,12 @@ async function addFiles() {
     // would hide comics; the backend checks each file's contents instead.
     filters: IS_ANDROID
       ? undefined
-      : [{ name: "Books and comics", extensions: ["epub", "pdf", "cbz", "zip"] }],
+      : [
+          {
+            name: "Books, comics and podfics",
+            extensions: ["epub", "pdf", "cbz", "zip", ...AUDIO_EXTS],
+          },
+        ],
   });
   if (!picked) return;
   const paths = Array.isArray(picked) ? picked : [picked];
@@ -752,7 +759,7 @@ async function addAndroidFolder() {
   });
   if (!items) return; // cancelled
   if (!items.length) {
-    toast("No EPUB, PDF or CBZ files in that folder.", true);
+    toast("No books, comics or podfics in that folder.", true);
     return;
   }
   const report = { added: [], skipped: [], failed: [] };
@@ -1936,9 +1943,34 @@ async function openEpub(book) {
 
 const footer = { page: "", battery: null, clock: null, batteryHooked: false };
 
+/// The time for the status line, 12- or 24-hour as chosen in Settings.
+function clockText(now) {
+  const h24 = pref("clock", "12") === "24";
+  return now.toLocaleTimeString([], {
+    hour: h24 ? "2-digit" : "numeric",
+    minute: "2-digit",
+    hourCycle: h24 ? "h23" : "h12",
+  });
+}
+
+function applyClockChoice() {
+  const choice = pref("clock", "12");
+  document.querySelectorAll("[data-clock-choice]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.clockChoice === choice);
+    b.setAttribute("aria-checked", String(b.dataset.clockChoice === choice));
+  });
+}
+applyClockChoice();
+document.querySelectorAll("[data-clock-choice]").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("clock", b.dataset.clockChoice);
+    applyClockChoice();
+  }),
+);
+
 function renderFooter() {
   const now = new Date();
-  const time = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
+  const time = clockText(now);
   const bits = [footer.page, time];
   if (footer.battery != null) bits.push(`${footer.battery}%`);
   $("#foot-text").textContent = bits.filter(Boolean).join("   ");
@@ -3375,6 +3407,262 @@ $("#btn-ao3-signout").addEventListener("click", async () => {
   await refreshAo3Status();
   toast(IS_ANDROID ? "Signed out." : "Signed out. The password has been removed.");
 });
+
+// --------------------------------------------------------------- podfic
+//
+// Podfics are audio files in the library. One plays at a time; it keeps
+// playing while she browses, with a small bar above the bottom of the
+// screen, and its place is saved (and synced) as seconds.
+
+const AUDIO_EXTS = ["mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "wav"];
+const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
+const SLEEP_STEPS = [0, 15, 30, 45, 60, -1]; // minutes; -1 = end of file
+
+const listen = {
+  book: null,
+  audio: $("#listen-audio"),
+  seeking: false,
+  lastSaved: 0,
+  sleepIndex: 0,
+  sleepTimer: null,
+  sleepAt: 0,
+};
+
+function clock(sec) {
+  if (!Number.isFinite(sec) || sec < 0) sec = 0;
+  const s = Math.floor(sec % 60);
+  const m = Math.floor(sec / 60) % 60;
+  const h = Math.floor(sec / 3600);
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+async function openPodfic(book) {
+  if (book.missing) {
+    toast(`That file is no longer at ${book.path}`, true);
+    return;
+  }
+  if (listen.book?.id !== book.id) {
+    // open_book lets the file through the asset protocol.
+    const { book: fresh } = await call("open_book", { id: book.id });
+    savePodficPlace(true);
+    listen.book = fresh;
+    const a = listen.audio;
+    $("#listen-error").hidden = true;
+    a.src = convertFileSrc(fresh.path);
+    a.playbackRate = Number(pref("podficSpeed", "1")) || 1;
+    const start = parseFloat(fresh.position || "0") || 0;
+    a.addEventListener(
+      "loadedmetadata",
+      () => {
+        // Start a few seconds back, so she hears where she left off.
+        if (start > 0 && start < a.duration - 1) a.currentTime = Math.max(0, start - 3);
+        renderPodfic();
+      },
+      { once: true },
+    );
+    $("#listen-title").textContent = fresh.title;
+    $("#listen-author").textContent = fresh.author || "";
+    $("#mini-title").textContent = fresh.title;
+    const art = $("#listen-art");
+    art.innerHTML = "<span>🎧</span>";
+    if (fresh.has_cover) {
+      invoke("book_cover", { id: fresh.id })
+        .then((url) => {
+          if (url && listen.book?.id === fresh.id) {
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = "";
+            art.replaceChildren(img);
+          }
+        })
+        .catch(() => {});
+    }
+    setMediaSession(fresh);
+  }
+  showListen();
+}
+
+function showListen() {
+  show("listen");
+  if (!history.state?.listen) history.pushState({ listen: true }, "");
+  renderPodfic();
+}
+
+function leaveListen() {
+  if (history.state?.listen) history.back();
+  else show("library");
+}
+
+window.addEventListener("popstate", () => {
+  if ($("#view-listen").classList.contains("active")) show("library");
+});
+
+function renderPodfic() {
+  const a = listen.audio;
+  const dur = a.duration;
+  const playing = !a.paused && !a.ended;
+  $("#listen-play").textContent = playing ? "⏸" : "▶";
+  $("#listen-play").title = playing ? "Pause" : "Play";
+  $("#mini-play").textContent = playing ? "⏸" : "▶";
+  $("#listen-speed").textContent = `${a.playbackRate}×`;
+  if (!listen.seeking && Number.isFinite(dur) && dur > 0) {
+    $("#listen-seek").value = String(Math.round((a.currentTime / dur) * 1000));
+  }
+  $("#listen-now").textContent = clock(a.currentTime);
+  $("#listen-left").textContent = Number.isFinite(dur) ? `−${clock(dur - a.currentTime)}` : "";
+  $("#mini-time").textContent = Number.isFinite(dur) ? `${clock(a.currentTime)} / ${clock(dur)}` : "";
+  const away = !$("#view-listen").classList.contains("active");
+  $("#mini-player").hidden = !(listen.book && away && !document.body.classList.contains("reading"));
+}
+
+function savePodficPlace(force = false) {
+  const a = listen.audio;
+  if (!listen.book || !Number.isFinite(a.currentTime)) return;
+  const now = Date.now();
+  if (!force && now - listen.lastSaved < 5000) return;
+  listen.lastSaved = now;
+  let pos = a.currentTime;
+  if (a.ended) pos = 0; // finished: next time starts from the top
+  listen.book.position = pos.toFixed(1);
+  saveWhere(listen.book, listen.book.position);
+}
+
+function togglePlay() {
+  const a = listen.audio;
+  if (!listen.book) return;
+  if (a.paused) {
+    a.play().catch((e) => {
+      $("#listen-error").hidden = false;
+      $("#listen-error").textContent = `Could not play this file: ${e?.message || e}`;
+    });
+  } else {
+    a.pause();
+  }
+}
+
+function skip(sec) {
+  const a = listen.audio;
+  if (!Number.isFinite(a.duration)) return;
+  a.currentTime = Math.min(Math.max(0, a.currentTime + sec), a.duration);
+  renderPodfic();
+}
+
+{
+  const a = listen.audio;
+  a.addEventListener("timeupdate", () => {
+    renderPodfic();
+    savePodficPlace();
+  });
+  a.addEventListener("play", renderPodfic);
+  a.addEventListener("pause", () => {
+    renderPodfic();
+    savePodficPlace(true);
+    syncSoon();
+  });
+  a.addEventListener("ended", () => {
+    renderPodfic();
+    savePodficPlace(true);
+    if (SLEEP_STEPS[listen.sleepIndex] === -1) setSleep(0);
+  });
+  a.addEventListener("ratechange", renderPodfic);
+  a.addEventListener("error", () => {
+    if (!listen.book) return;
+    $("#listen-error").hidden = false;
+    $("#listen-error").textContent =
+      "This file could not be played. It may be in a format this device does not support.";
+  });
+
+  $("#listen-play").addEventListener("click", togglePlay);
+  $("#mini-play").addEventListener("click", togglePlay);
+  $("#mini-open").addEventListener("click", () => listen.book && showListen());
+  $("#listen-back").addEventListener("click", leaveListen);
+  $("#listen-back15").addEventListener("click", () => skip(-15));
+  $("#listen-fwd30").addEventListener("click", () => skip(30));
+
+  const seek = $("#listen-seek");
+  seek.addEventListener("input", () => {
+    listen.seeking = true;
+    if (Number.isFinite(a.duration)) {
+      $("#listen-now").textContent = clock((Number(seek.value) / 1000) * a.duration);
+    }
+  });
+  seek.addEventListener("change", () => {
+    listen.seeking = false;
+    if (Number.isFinite(a.duration)) a.currentTime = (Number(seek.value) / 1000) * a.duration;
+    savePodficPlace(true);
+  });
+
+  $("#listen-speed").addEventListener("click", () => {
+    const i = SPEEDS.indexOf(a.playbackRate);
+    const next = SPEEDS[(i + 1) % SPEEDS.length] ?? 1;
+    a.playbackRate = next;
+    setPref("podficSpeed", String(next));
+  });
+  $("#listen-sleep").addEventListener("click", () => setSleep((listen.sleepIndex + 1) % SLEEP_STEPS.length));
+
+  // Space bar on a computer.
+  document.addEventListener("keydown", (e) => {
+    if (!$("#view-listen").classList.contains("active")) return;
+    if (e.key === " " && e.target === document.body) {
+      e.preventDefault();
+      togglePlay();
+    }
+    if (e.key === "ArrowLeft") skip(-15);
+    if (e.key === "ArrowRight") skip(30);
+    if (e.key === "Escape") leaveListen();
+  });
+
+  // Leaving the app is a good moment to keep her place.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") savePodficPlace(true);
+  });
+}
+
+window.__podficBar = renderPodfic;
+
+function setSleep(index) {
+  listen.sleepIndex = index;
+  clearInterval(listen.sleepTimer);
+  listen.sleepTimer = null;
+  const step = SLEEP_STEPS[index];
+  const btn = $("#listen-sleep");
+  if (step === 0) {
+    btn.textContent = "Sleep: off";
+    return;
+  }
+  if (step === -1) {
+    btn.textContent = "Sleep: end of file";
+    return;
+  }
+  listen.sleepAt = Date.now() + step * 60_000;
+  const tick = () => {
+    const left = listen.sleepAt - Date.now();
+    if (left <= 0) {
+      listen.audio.pause();
+      setSleep(0);
+      return;
+    }
+    btn.textContent = `Sleep: ${Math.ceil(left / 60_000)} min`;
+  };
+  tick();
+  listen.sleepTimer = setInterval(tick, 15_000);
+}
+
+/// Lock-screen and headphone controls, where the platform offers them.
+function setMediaSession(book) {
+  const ms = navigator.mediaSession;
+  if (!ms || typeof MediaMetadata === "undefined") return;
+  try {
+    ms.metadata = new MediaMetadata({ title: book.title, artist: book.author || "", album: "FicShelf" });
+    ms.setActionHandler("play", () => listen.audio.play());
+    ms.setActionHandler("pause", () => listen.audio.pause());
+    ms.setActionHandler("seekbackward", () => skip(-15));
+    ms.setActionHandler("seekforward", () => skip(30));
+  } catch {
+    /* optional */
+  }
+}
 
 // ----------------------------------------------------------------- boot
 

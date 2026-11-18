@@ -180,6 +180,15 @@ pub fn image_mime(name: &str) -> &'static str {
 /// `mimetype` holding `application/epub+zip`; the spec requires this so that
 /// exactly this check works. Any other zip is treated as a comic.
 pub fn sniff_format(bytes: &[u8], name_hint: &str) -> Option<&'static str> {
+    if let Some(ext) = sniff_audio(bytes) {
+        // The contents say "audio"; the name, when it is an audio name too,
+        // says which flavour better (.m4b vs .m4a, .aac vs .mp3).
+        let named = name_hint.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+        if let Some(n) = named.as_deref().and_then(audio_ext) {
+            return Some(n);
+        }
+        return Some(ext);
+    }
     if bytes.starts_with(b"%PDF") {
         return Some("pdf");
     }
@@ -193,6 +202,63 @@ pub fn sniff_format(bytes: &[u8], name_hint: &str) -> Option<&'static str> {
             return Some("epub");
         }
         return Some("cbz");
+    }
+    None
+}
+
+/// Audio file extensions FicShelf plays (podfics), as the canonical
+/// `&'static str` for an extension in any case.
+pub fn audio_ext(ext: &str) -> Option<&'static str> {
+    const ALL: &[&str] = &["mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "wav"];
+    let lower = ext.to_ascii_lowercase();
+    ALL.iter().copied().find(|e| *e == lower)
+}
+
+/// What kind of item a file extension is in the library: "epub", "pdf",
+/// "cbz" or "audio".
+pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "epub" => Some("epub"),
+        "pdf" => Some("pdf"),
+        "cbz" | "zip" => Some("cbz"),
+        other => audio_ext(other).map(|_| "audio"),
+    }
+}
+
+/// The audio format of a file from its first bytes, as an extension.
+fn sniff_audio(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(b"ID3") {
+        return Some("mp3");
+    }
+    if b.len() >= 12 && &b[4..8] == b"ftyp" {
+        let brand = &b[8..12];
+        // An MP4 container. Only the audio brands count; a video is not a
+        // podfic FicShelf can show.
+        return match brand {
+            b"M4B " | b"M4BP" => Some("m4b"),
+            b"M4A " | b"M4P " | b"mp42" | b"isom" | b"dash" => Some("m4a"),
+            _ => None,
+        };
+    }
+    if b.starts_with(b"OggS") {
+        return Some(if contains(&b[..b.len().min(256)], b"OpusHead") { "opus" } else { "ogg" });
+    }
+    if b.starts_with(b"fLaC") {
+        return Some("flac");
+    }
+    if b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WAVE" {
+        return Some("wav");
+    }
+    // A bare MPEG audio frame: eleven sync bits, then a valid layer.
+    if b.len() >= 2 && b[0] == 0xFF && (b[1] & 0xE0) == 0xE0 {
+        let layer = (b[1] >> 1) & 0x03;
+        let version = (b[1] >> 3) & 0x03;
+        if layer == 0 && version != 1 {
+            return Some("aac"); // ADTS
+        }
+        if layer != 0 {
+            return Some("mp3");
+        }
     }
     None
 }
@@ -374,5 +440,28 @@ mod tests {
         assert_eq!(name_from_uri("content://x/document/100%"), None);
         // a stray % before a multi-byte character must not panic
         assert_eq!(name_from_uri("/x/%éa.pdf").as_deref(), Some("%éa.pdf"));
+    }
+}
+
+#[cfg(test)]
+mod audio_sniff_tests {
+    use super::*;
+
+    #[test]
+    fn sniffs_audio() {
+        assert_eq!(sniff_format(b"ID3\x03\x00\x00\x00\x00\x00\x00", "x.mp3"), Some("mp3"));
+        assert_eq!(sniff_format(b"ID3\x03\x00\x00\x00\x00\x00\x00", ""), Some("mp3"));
+        assert_eq!(sniff_format(&[0xFF, 0xFB, 0x90, 0x00], ""), Some("mp3"));
+        assert_eq!(sniff_format(&[0xFF, 0xF1, 0x50, 0x80], ""), Some("aac"));
+        assert_eq!(sniff_format(b"\0\0\0\x20ftypM4A \0\0\0\0", "Fic.m4b"), Some("m4b"));
+        assert_eq!(sniff_format(b"\0\0\0\x20ftypM4B \0\0\0\0", ""), Some("m4b"));
+        assert_eq!(sniff_format(b"\0\0\0\x20ftypqt  \0\0\0\0", ""), None);
+        assert_eq!(sniff_format(b"OggS\0\x02xxxxxxxxxxxxxxxxxxxxxxOpusHead", ""), Some("opus"));
+        assert_eq!(sniff_format(b"fLaC\0\0", ""), Some("flac"));
+        assert_eq!(sniff_format(b"RIFF\0\0\0\0WAVEfmt ", ""), Some("wav"));
+        assert_eq!(sniff_format(b"%PDF-1.7", "a.mp3"), Some("pdf"));
+        assert_eq!(kind_of_ext("M4B"), Some("audio"));
+        assert_eq!(kind_of_ext("zip"), Some("cbz"));
+        assert_eq!(kind_of_ext("mp4"), None);
     }
 }
