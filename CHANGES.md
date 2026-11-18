@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.1
+
+- Fixes 1.1.0 closing straight away on Android phones.
+
 ## 1.1.0
 
 Library tools in the spirit of Calibre:
