@@ -235,8 +235,23 @@ async fn import_folder(app: tauri::AppHandle, path: String) -> Result<ImportRepo
         let mut files: Vec<PathBuf> = Vec::new();
         collect_files(&root, true, &mut files, 0);
         files.sort();
-        let total = files.len();
+        // Adding a folder again only adds what is new; books already in the
+        // library keep everything and are not read again.
+        let known = {
+            let conn = state.conn.lock().map_err(err)?;
+            db::book_paths(&conn).map_err(chain)?
+        };
         let mut report = ImportReport { added: vec![], skipped: vec![], failed: vec![] };
+        files.retain(|f| {
+            let key = f.to_string_lossy().to_string();
+            if known.contains(&key) {
+                report.skipped.push(key);
+                false
+            } else {
+                true
+            }
+        });
+        let total = files.len();
         let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
         for (i, file) in files.iter().enumerate() {
             if last.elapsed() >= std::time::Duration::from_millis(200) || i + 1 == total {
@@ -257,10 +272,94 @@ async fn import_folder(app: tauri::AppHandle, path: String) -> Result<ImportRepo
             }
         }
         app.emit("import-progress", serde_json::json!({ "done": total, "total": total, "name": "" })).ok();
+        // Remembered, so new books dropped in later are found by themselves.
+        if let Ok(conn) = state.conn.lock() {
+            db::watch_folder(&conn, &root.to_string_lossy()).ok();
+        }
         Ok(report)
     })
     .await
     .map_err(err)?
+}
+
+#[derive(Serialize)]
+struct FolderCheck {
+    folders: usize,
+    added: Vec<db::Book>,
+    failed: Vec<(String, String)>,
+    /// Watched folders that could not be opened (moved, unplugged, or All
+    /// files access switched off).
+    unreachable: Vec<String>,
+}
+
+/// Look through the watched folders for files not yet in the library and
+/// add them. Only new files are opened, so it is quick even for a big
+/// library. Files that could not be added are skipped next time unless
+/// their size changes.
+#[tauri::command]
+async fn check_folders(app: tauri::AppHandle) -> Result<FolderCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (folders, known, skips) = {
+            let conn = state.conn.lock().map_err(err)?;
+            (
+                db::watched_folders(&conn).map_err(chain)?,
+                db::book_paths(&conn).map_err(chain)?,
+                db::scan_skips(&conn).map_err(chain)?,
+            )
+        };
+        let mut out = FolderCheck { folders: folders.len(), added: vec![], failed: vec![], unreachable: vec![] };
+        for folder in &folders {
+            let root = PathBuf::from(folder);
+            if !root.is_dir() {
+                out.unreachable.push(folder.clone());
+                continue;
+            }
+            let mut files = Vec::new();
+            collect_files(&root, true, &mut files, 0);
+            files.sort();
+            for file in files {
+                let key = file.to_string_lossy().to_string();
+                if known.contains(&key) {
+                    continue;
+                }
+                let size = std::fs::metadata(&file).map(|m| m.len() as i64).unwrap_or(-1);
+                if skips.get(&key) == Some(&size) {
+                    continue;
+                }
+                let folder_name = parent_name(&file);
+                let result = match state.conn.lock() {
+                    Ok(conn) => import_one(&conn, &file, folder_name.as_deref()).map_err(chain),
+                    Err(e) => Err(e.to_string()),
+                };
+                match result {
+                    Ok(book) => out.added.push(book),
+                    Err(e) => {
+                        if let Ok(conn) = state.conn.lock() {
+                            db::set_scan_skip(&conn, &key, size).ok();
+                        }
+                        out.failed.push((key, e));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn watched_folders(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::watched_folders(&conn).map_err(chain)
+}
+
+/// Stop checking a folder. Its books stay in the library.
+#[tauri::command]
+fn unwatch_folder(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::unwatch_folder(&conn, &path).map_err(chain)
 }
 
 /// Walk a folder and import everything readable in it.
@@ -1774,6 +1873,9 @@ pub fn run() {
             list_books,
             open_link,
             import_folder,
+            check_folders,
+            watched_folders,
+            unwatch_folder,
             check_app_update,
             report_available,
             report_problem,

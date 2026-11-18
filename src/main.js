@@ -965,6 +965,7 @@ async function importFolderInPlace(path) {
   try {
     const report = await invoke("import_folder", { path });
     await refreshLibrary();
+    refreshWatched();
     reportImport(report);
     for (const [file, why] of report.failed) logError(`add folder (${file})`, why);
   } catch (e) {
@@ -974,6 +975,68 @@ async function importFolderInPlace(path) {
     busy($("#task-panel"), false);
   }
 }
+
+// ------------------------------------------------------ watched folders
+
+async function refreshWatched() {
+  let folders = [];
+  try {
+    folders = await invoke("watched_folders");
+  } catch {
+    /* older library: none */
+  }
+  $("#btn-check-folders").hidden = folders.length === 0;
+  $("#watched-setting").hidden = folders.length === 0;
+  const list = $("#watched-list");
+  list.textContent = "";
+  for (const path of folders) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = path;
+    const stop = document.createElement("button");
+    stop.textContent = "Stop watching";
+    stop.addEventListener("click", async () => {
+      await call("unwatch_folder", { path });
+      toast("FicShelf will no longer check that folder. Its books stay in the library.");
+      refreshWatched();
+    });
+    li.append(name, stop);
+    list.appendChild(li);
+  }
+  return folders;
+}
+
+/// Look for new books in the watched folders. Quiet at startup (a note
+/// only if something was found); with feedback when tapped.
+async function checkFolders(quiet) {
+  const btn = $("#btn-check-folders");
+  btn.disabled = true;
+  if (!quiet) toast("Checking your folders…");
+  try {
+    const r = await invoke("check_folders");
+    for (const [file, why] of r.failed) logError(`check folders (${file})`, why);
+    if (r.added.length) {
+      await refreshLibrary();
+      toast(`${r.added.length} new book${r.added.length === 1 ? "" : "s"} found in your folders.`);
+    } else if (!quiet) {
+      toast(r.unreachable.length ? "A watched folder could not be opened (moved, or All files access is off)." : "No new books.");
+    }
+    if (r.unreachable.length) logError("check folders", `could not open: ${r.unreachable.join(", ")}`);
+  } catch (e) {
+    if (!quiet) toast(`Could not check the folders: ${e}`, true);
+    else logError("check folders", e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("#btn-check-folders").addEventListener("click", () => checkFolders(false));
+
+// At startup, a few seconds in, so opening the app is never slowed.
+setTimeout(async () => {
+  const folders = await refreshWatched();
+  if (folders.length) checkFolders(true);
+}, 5_000);
 
 let folderPathPicked = null;
 window.__ficshelfFolderPath = (path) => {

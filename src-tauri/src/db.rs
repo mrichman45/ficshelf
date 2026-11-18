@@ -107,7 +107,58 @@ fn add_columns(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS sync_tombstones (
             uid TEXT PRIMARY KEY,
             at  INTEGER NOT NULL
+        );
+        -- Folders added in place, checked for new books.
+        CREATE TABLE IF NOT EXISTS watched_folders (
+            path     TEXT PRIMARY KEY,
+            added_at INTEGER NOT NULL
+        );
+        -- Files a folder check could not add, skipped until they change.
+        CREATE TABLE IF NOT EXISTS scan_skips (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL
         );",
+    )?;
+    Ok(())
+}
+
+pub fn watch_folder(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO watched_folders(path, added_at) VALUES(?1, ?2) ON CONFLICT(path) DO NOTHING",
+        params![path, now()],
+    )?;
+    Ok(())
+}
+
+pub fn unwatch_folder(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute("DELETE FROM watched_folders WHERE path = ?1", params![path])?;
+    Ok(())
+}
+
+pub fn watched_folders(conn: &Connection) -> Result<Vec<String>> {
+    let mut st = conn.prepare("SELECT path FROM watched_folders ORDER BY path")?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Every book's path, for telling new files from known ones.
+pub fn book_paths(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut st = conn.prepare("SELECT path FROM books")?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Files skipped by folder checks, with the size they had when they failed.
+pub fn scan_skips(conn: &Connection) -> Result<std::collections::HashMap<String, i64>> {
+    let mut st = conn.prepare("SELECT path, size FROM scan_skips")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn set_scan_skip(conn: &Connection, path: &str, size: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO scan_skips(path, size) VALUES(?1, ?2) ON CONFLICT(path) DO UPDATE SET size = excluded.size",
+        params![path, size],
     )?;
     Ok(())
 }

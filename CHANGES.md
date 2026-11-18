@@ -2,6 +2,15 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.0
+
+- **Folders are watched.** Folders added with Add folder (read in place on a
+  phone; any folder on a computer) are checked for new books each time
+  FicShelf opens, and with the new **Check folders** button in the Library.
+  Only new files are opened, so it takes seconds even for a big library.
+- Adding a folder again only adds what is new, quickly.
+- Settings → Folders FicShelf watches lists them, with Stop watching.
+
 ## 1.0.0
 
 The first stable release.

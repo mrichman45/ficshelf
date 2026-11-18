@@ -56,6 +56,7 @@
           <button id="lib-layout" title="Grid or list" aria-label="Grid or list"></button>
           <button id="btn-add-files">Add files…</button>
           <button id="btn-add-folder">Add folder…</button>
+          <button id="btn-check-folders" hidden title="Look in your folders for books added since">Check folders</button>
         </header>
         <div id="series-head" class="series-head" hidden>
           <button id="btn-series-back">← All series</button>
@@ -421,6 +422,17 @@
             itself after two refused passwords, so the account is never locked
             by mistake.
           </p>
+        </div>
+
+        <div class="setting" id="watched-setting" hidden>
+          <h3>Folders FicShelf watches</h3>
+          <p class="muted">
+            Folders you added in place. New books put in them are added by
+            themselves each time FicShelf opens, or with <strong>Check
+            folders</strong> in the Library. Books taken out of a folder stay in
+            the library, marked as missing, so their notes are kept.
+          </p>
+          <ul id="watched-list" class="watched-list"></ul>
         </div>
 
         <div class="setting">
