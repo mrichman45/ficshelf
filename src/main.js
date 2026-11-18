@@ -1,4 +1,6 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen as onEvent } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import ePub from "epubjs";
 import * as pdfjs from "pdfjs-dist";
@@ -186,7 +188,85 @@ const state = {
 
 // ------------------------------------------------------------- plumbing
 
-function toast(message, bad = false) {
+// ------------------------------------------------------------ error log
+//
+// Every error FicShelf shows is kept (on this device only) so that when
+// something goes wrong there is a record of what and when: Settings → Error
+// log, with a button to copy it.
+
+const LOG_KEY = "ficshelf.errorlog";
+const LOG_MAX = 200;
+let appVersion = "";
+getVersion()
+  .then((v) => (appVersion = v))
+  .catch(() => {});
+
+function readLog() {
+  try {
+    const list = JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/// Record an error: `what` is what FicShelf was doing (a command or a
+/// short description), `message` what went wrong.
+function logError(what, message) {
+  const text = typeof message === "string" ? message : message?.message || String(message);
+  const list = readLog();
+  const last = list[0];
+  // The same error twice in a row within a few seconds is one event.
+  if (last && last.msg === text && last.what === what && Date.now() - last.t < 5000) {
+    last.n = (last.n || 1) + 1;
+  } else {
+    list.unshift({
+      t: Date.now(),
+      what: what || "",
+      msg: text,
+      v: appVersion,
+      where: window.__view || "",
+    });
+  }
+  try {
+    localStorage.setItem(LOG_KEY, JSON.stringify(list.slice(0, LOG_MAX)));
+  } catch {
+    /* storage full or unavailable: nothing more to do */
+  }
+  if (document.getElementById("error-log")?.offsetParent) renderLog();
+}
+
+function logLine(e) {
+  const when = new Date(e.t).toLocaleString();
+  const times = e.n > 1 ? ` (×${e.n})` : "";
+  const what = e.what ? `${e.what}: ` : "";
+  return `${when}${e.v ? ` · v${e.v}` : ""}${e.where ? ` · ${e.where}` : ""}${times}\n${what}${e.msg}`;
+}
+
+function renderLog() {
+  const box = document.getElementById("error-log");
+  if (!box) return;
+  const list = readLog();
+  box.textContent = "";
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No errors recorded.";
+    box.appendChild(li);
+    return;
+  }
+  for (const e of list) {
+    const li = document.createElement("li");
+    li.textContent = logLine(e);
+    box.appendChild(li);
+  }
+}
+
+window.addEventListener("error", (e) => logError("app error", e.message || String(e.error)));
+window.addEventListener("unhandledrejection", (e) => logError("app error", e.reason?.message || String(e.reason)));
+
+function toast(message, bad = false, record = bad) {
+  if (record) logError("", message);
   const el = $("#toast");
   el.textContent = message;
   el.classList.toggle("bad", bad);
@@ -199,9 +279,31 @@ async function call(cmd, args) {
   try {
     return await invoke(cmd, args);
   } catch (e) {
-    toast(typeof e === "string" ? e : String(e), true);
+    const msg = typeof e === "string" ? e : String(e);
+    logError(describeCall(cmd, args), msg);
+    toast(msg, true, false);
     throw e;
   }
+}
+
+/// A short, readable note of what a command was trying to do, for the log.
+function describeCall(cmd, args = {}) {
+  const bits = [];
+  for (const k of ["workId", "query", "page", "url", "id"]) {
+    if (args && args[k] !== undefined && args[k] !== null) bits.push(`${k}=${String(args[k]).slice(0, 120)}`);
+  }
+  return bits.length ? `${cmd} (${bits.join(", ")})` : cmd;
+}
+
+/// Show or hide a progress bar. With a fraction it fills to that point;
+/// without one it runs as a moving "working on it" stripe.
+function busy(el, on, fraction) {
+  if (!el) return;
+  el.hidden = !on;
+  const fill = el.querySelector(".busy-fill");
+  const known = typeof fraction === "number" && Number.isFinite(fraction);
+  el.classList.toggle("indeterminate", on && !known);
+  if (fill) fill.style.width = known ? `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%` : "";
 }
 
 // window.confirm and window.prompt are not available in the Android webview,
@@ -220,6 +322,8 @@ function show(view) {
   if (view === "bookmarks" && !shelfState.loadedOnce) loadShelf(true);
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  window.__view = view; // for the error log: which screen she was on
+  if (view === "settings") renderLog();
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
 }
 
@@ -2637,7 +2741,8 @@ async function loadMoreResults() {
   if (searchState.loading || !searchState.query) return;
   searchState.loading = true;
   $("#btn-search-more").hidden = true;
-  $("#ao3-status").textContent = "Asking AO3…";
+  busy($("#search-more-busy"), true);
+  $("#ao3-status").textContent = `${searchState.count} works. Asking AO3 for more…`;
   try {
     const hits = await call("ao3_search", { query: searchState.query, page: searchState.page + 1 });
     searchState.page += 1;
@@ -2646,10 +2751,11 @@ async function loadMoreResults() {
     $("#ao3-status").textContent = `${searchState.count} works.`;
     $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
   } catch {
-    $("#ao3-status").textContent = `${searchState.count} works.`;
+    $("#ao3-status").textContent = `${searchState.count} works. Loading more failed — see Settings → Error log.`;
     $("#btn-search-more").hidden = false;
   } finally {
     searchState.loading = false;
+    busy($("#search-more-busy"), false);
   }
 }
 
@@ -2658,7 +2764,8 @@ async function runSearch() {
   if (!query) return;
 
   const direct = query.match(AO3_WORK_RE);
-  $("#ao3-status").textContent = "Asking AO3…";
+  $("#ao3-status").textContent = direct ? "Saving that work from AO3…" : "Searching AO3…";
+  busy($("#search-busy"), true);
   $("#ao3-results").textContent = "";
   $("#btn-search-more").hidden = true;
   Object.assign(searchState, { query: "", page: 0, count: 0 });
@@ -2680,7 +2787,9 @@ async function runSearch() {
     // A full page means AO3 probably has more.
     $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
   } catch {
-    $("#ao3-status").textContent = "";
+    $("#ao3-status").textContent = "That didn't work — the reason is in Settings → Error log.";
+  } finally {
+    busy($("#search-busy"), false);
   }
 }
 
@@ -3339,6 +3448,29 @@ document.querySelectorAll("[data-storage]").forEach((b) =>
   }),
 );
 
+$("#btn-log-copy").addEventListener("click", async () => {
+  const list = readLog();
+  const text = list.length
+    ? `FicShelf error log (${list.length})\n\n${list.map(logLine).join("\n\n")}`
+    : "FicShelf error log: no errors recorded.";
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Error log copied.");
+  } catch {
+    // Clipboard refused (some WebViews): select the text so it can be copied by hand.
+    const range = document.createRange();
+    range.selectNodeContents($("#error-log"));
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast("Select-all done — use Copy from the menu.");
+  }
+});
+$("#btn-log-clear").addEventListener("click", () => {
+  localStorage.removeItem(LOG_KEY);
+  renderLog();
+});
+
 $("#btn-change-dir").addEventListener("click", async () => {
   const dir = await openDialog({ directory: true });
   if (!dir) return;
@@ -3452,6 +3584,18 @@ function webLinkClicked(e, book) {
   else invoke("open_link", { url: href }).catch((err) => toast(String(err), true));
 }
 
+function megabytes(n) {
+  return n >= 10 * 1024 * 1024 ? `${Math.round(n / 1048576)} MB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+
+onEvent("podfic-progress", ({ payload }) => {
+  const { got = 0, total = null } = payload || {};
+  const panel = $("#task-panel");
+  if (panel.hidden) return;
+  $("#task-amount").textContent = total ? `${megabytes(got)} of ${megabytes(total)}` : megabytes(got);
+  busy(panel, true, total ? got / total : undefined);
+}).catch(() => {});
+
 async function offerPodficSave(url, book) {
   const host = new URL(url).host;
   const ok = await ask(
@@ -3462,7 +3606,10 @@ async function offerPodficSave(url, book) {
     invoke("open_link", { url }).catch((err) => toast(String(err), true));
     return;
   }
-  toast(`Downloading the podfic from ${host}…`);
+  const panel = $("#task-panel");
+  $("#task-title").textContent = `Saving podfic from ${host}…`;
+  $("#task-amount").textContent = "connecting";
+  busy(panel, true);
   try {
     const saved = await invoke("save_podfic_url", {
       url,
@@ -3472,7 +3619,10 @@ async function offerPodficSave(url, book) {
     toast(`Saved “${saved.title}” — it's in your library under Podfics.`);
     refreshLibrary();
   } catch (err) {
-    toast(`Could not save the podfic: ${err}`, true);
+    logError(`save podfic (${url})`, err);
+    toast(`Could not save the podfic: ${err}`, true, false);
+  } finally {
+    busy(panel, false);
   }
 }
 

@@ -1004,3 +1004,75 @@ html:not(.android) #dim-edge,
 
 /* A setting's second and later questions need room above them. */
 .setting .tabs + label { display: block; margin-top: 16px; }
+
+/* ------------------------------------------------------------ progress */
+
+.busy { margin: 8px 0; }
+.busy[hidden] { display: none; }
+.busy-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+  position: relative;
+}
+.busy-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.25s ease;
+}
+.indeterminate .busy-fill {
+  width: 35% !important;
+  position: absolute;
+  animation: busy-slide 1.2s ease-in-out infinite;
+}
+@keyframes busy-slide {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+/* With animations off the stripe still shows, just still. */
+html[data-motion="off"] .indeterminate .busy-fill { left: 0; width: 100% !important; opacity: 0.5; }
+
+#task-panel {
+  position: fixed;
+  left: 50%;
+  bottom: calc(70px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(92vw, 420px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 14px 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 49;
+}
+#task-panel[hidden] { display: none; }
+.task-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+#task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#task-amount { color: var(--ink-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.error-log {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+  max-height: 50vh;
+  overflow: auto;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.error-log li {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}

@@ -617,6 +617,7 @@ const MAX_PODFIC_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// asks for it; nothing else on that site is touched.
 #[tauri::command]
 async fn save_podfic_url(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     url: String,
     title: Option<String>,
@@ -686,6 +687,14 @@ async fn save_podfic_url(
     let mut out = std::fs::File::create(&tmp).map_err(err)?;
     let mut head: Vec<u8> = Vec::with_capacity(256);
     let mut size: u64 = 0;
+    let total = resp.content_length();
+    // Progress for the front end, a few times a second at most.
+    let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let report = |got: u64| {
+        use tauri::Emitter;
+        app.emit("podfic-progress", serde_json::json!({ "got": got, "total": total })).ok();
+    };
+    report(0);
     let result: Result<(), String> = async {
         while let Some(chunk) = resp.chunk().await.map_err(|e| format!("the download stopped: {e}"))? {
             if head.len() < 256 {
@@ -702,7 +711,12 @@ async fn save_podfic_url(
                 return Err("that file is over 2 GB, too large to save".into());
             }
             out.write_all(&chunk).map_err(err)?;
+            if last_report.elapsed() >= std::time::Duration::from_millis(250) {
+                last_report = std::time::Instant::now();
+                report(size);
+            }
         }
+        report(size);
         out.flush().map_err(err)?;
         Ok(())
     }

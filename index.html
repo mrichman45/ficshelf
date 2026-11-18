@@ -146,9 +146,12 @@
           <button id="btn-ao3-search">Search</button>
           <button id="btn-save-search">Save this search</button>
         </header>
+        <div id="search-busy" class="busy" hidden><div class="busy-track"><div class="busy-fill"></div></div></div>
+        <p id="ao3-status" class="muted"></p>
         <div class="split">
           <div>
             <div id="ao3-results" class="results"></div>
+            <div id="search-more-busy" class="busy" hidden><div class="busy-track"><div class="busy-fill"></div></div></div>
             <button id="btn-search-more" hidden>Load the next 20</button>
           </div>
           <aside id="saved-searches" class="side">
@@ -156,7 +159,6 @@
             <ul id="saved-list"></ul>
           </aside>
         </div>
-        <p id="ao3-status" class="muted"></p>
       </section>
 
       <!-- ----------------------------------------------- Bookmarks -->
@@ -394,6 +396,21 @@
             need you to be signed in above.
           </p>
         </div>
+
+        <div class="setting">
+          <h3>Error log</h3>
+          <p class="muted">
+            Every error FicShelf shows is also written here, newest first, with
+            what it was doing at the time. It stays on this device. Use
+            <strong>Copy log</strong> to paste it somewhere when something goes
+            wrong.
+          </p>
+          <div class="row">
+            <button id="btn-log-copy">Copy log</button>
+            <button id="btn-log-clear">Clear</button>
+          </div>
+          <ol id="error-log" class="error-log"></ol>
+        </div>
       </section>
     </main>
 
@@ -403,6 +420,12 @@
       <button id="mini-play" class="icon" title="Play or pause">▶</button>
     </div>
     <audio id="listen-audio" preload="metadata"></audio>
+
+    <!-- Long downloads (podfics) show their progress here until done. -->
+    <div id="task-panel" hidden>
+      <div class="task-label"><span id="task-title"></span><span id="task-amount"></span></div>
+      <div class="busy-track"><div id="task-fill" class="busy-fill"></div></div>
+    </div>
 
     <!-- Long-press (phone) or right-click (desktop) on a cover. -->
     <dialog id="book-menu" class="sheet">
