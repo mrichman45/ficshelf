@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; media-src 'self' asset: http://asset.localhost blob: https: http:; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost blob: data:; worker-src 'self' blob:",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https: http:; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; media-src 'self' asset: http://asset.localhost blob: https: http:; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost blob: data:; worker-src 'self' blob:",
       "assetProtocol": {
         "enable": true,
         "scope": [
