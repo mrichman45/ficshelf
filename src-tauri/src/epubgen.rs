@@ -170,6 +170,103 @@ pub fn iso_utc(secs: i64) -> String {
     )
 }
 
+/// Audio links in a work's page, for a podfic: the files of embedded
+/// players and links that point straight at an audio file. Only http(s),
+/// in page order, each once.
+pub fn audio_urls<'a>(candidates: impl IntoIterator<Item = (&'a str, bool)>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (url, from_player) in candidates {
+        let url = url.trim();
+        let lower = url.to_ascii_lowercase();
+        if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+            continue;
+        }
+        let path = lower.split(['?', '#']).next().unwrap_or("");
+        let is_audio = [".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav"]
+            .iter()
+            .any(|e| path.ends_with(e));
+        if (from_player || is_audio) && !out.iter().any(|u| u == url) {
+            out.push(url.to_string());
+        }
+    }
+    out
+}
+
+/// The page FicShelf adds to a podfic's EPUB: a player and a link for each
+/// audio file, since AO3's downloads leave embedded players out.
+pub fn podfic_xhtml(urls: &[String]) -> String {
+    let mut body = String::new();
+    for url in urls {
+        let u = xml_escape(url);
+        let name = url
+            .split(['?', '#'])
+            .next()
+            .and_then(|p| p.rsplit('/').next())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("audio file");
+        body.push_str(&format!(
+            "<div class=\"ficshelf-podfic\">\n<audio controls=\"controls\" preload=\"none\" src=\"{u}\"></audio>\n\
+             <p><a href=\"{u}\">Save or open {}</a></p>\n</div>\n",
+            xml_escape(&crate_percent_decode(name))
+        ));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n\
+         <html xmlns=\"http://www.w3.org/1999/xhtml\">\n<head><title>Podfic audio</title>\n\
+         <style>audio {{ width: 100%; margin: 1em 0 0.3em; }} .ficshelf-podfic {{ margin-bottom: 1.5em; }}</style>\n\
+         </head>\n<body>\n<h2>🎧 Podfic audio</h2>\n\
+         <p>AO3's download leaves out embedded audio players, so FicShelf kept the audio it found on the \
+         work's page. Tap ▶ to listen here, or tap the link to save the podfic to your library.</p>\n\
+         {body}</body>\n</html>\n"
+    )
+}
+
+fn crate_percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Add a page to an OPF: a manifest item and, at the end of the spine, a
+/// reference to it. None when the OPF has no manifest or spine to add to.
+pub fn opf_with_page(opf: &str, id: &str, href: &str) -> Option<String> {
+    let man = opf.rfind("</manifest>")?;
+    let item = format!(
+        "<item id=\"{id}\" href=\"{href}\" media-type=\"application/xhtml+xml\"/>\n"
+    );
+    let mut out = String::with_capacity(opf.len() + 200);
+    out.push_str(&opf[..man]);
+    out.push_str(&item);
+    out.push_str(&opf[man..]);
+    let spine = out.rfind("</spine>")?;
+    out.insert_str(spine, &format!("<itemref idref=\"{id}\"/>\n"));
+    Some(out)
+}
+
+/// Where an EPUB's OPF is, from META-INF/container.xml.
+pub fn rootfile_path(container: &str) -> Option<String> {
+    let at = container.find("full-path=")?;
+    let rest = &container[at + "full-path=".len()..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let end = rest[1..].find(quote)?;
+    Some(rest[1..1 + end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +321,34 @@ mod tests {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_utc(1_794_861_425), "2026-11-16T20:37:05Z");
         assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn podfic_page_and_opf() {
+        let urls = audio_urls([
+            ("http://host.example/pod/Feed%20the%20Body.mp3", false),
+            ("https://archiveofourown.org/works/1", false),
+            ("https://cdn.example/stream?id=9", true),
+            ("http://host.example/pod/Feed%20the%20Body.mp3", true),
+            ("javascript:alert(1)", true),
+        ]);
+        assert_eq!(urls, vec![
+            "http://host.example/pod/Feed%20the%20Body.mp3".to_string(),
+            "https://cdn.example/stream?id=9".to_string(),
+        ]);
+        let page = podfic_xhtml(&urls);
+        assert!(page.contains("Save or open Feed the Body.mp3"));
+        assert!(page.contains("src=\"https://cdn.example/stream?id=9\""));
+
+        let opf = "<package><manifest>\n<item id=\"a\" href=\"a.xhtml\"/>\n</manifest><spine>\n<itemref idref=\"a\"/>\n</spine></package>";
+        let out = opf_with_page(opf, "ficshelf-podfic", "ficshelf-podfic.xhtml").unwrap();
+        assert!(out.contains("<item id=\"ficshelf-podfic\" href=\"ficshelf-podfic.xhtml\""));
+        assert!(out.find("idref=\"a\"").unwrap() < out.find("idref=\"ficshelf-podfic\"").unwrap());
+        assert_eq!(opf_with_page("<package/>", "x", "x"), None);
+
+        assert_eq!(
+            rootfile_path(r#"<rootfile full-path="OEBPS/content.opf" media-type="x"/>"#).as_deref(),
+            Some("OEBPS/content.opf")
+        );
     }
 }

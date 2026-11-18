@@ -1149,7 +1149,15 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
 
     // Network first, lock afterwards.
     let meta = state.ao3.work_meta(work_id).await.map_err(chain)?;
-    let bytes = state.ao3.download_epub(&meta).await.map_err(chain)?;
+    let mut bytes = state.ao3.download_epub(&meta).await.map_err(chain)?;
+    // A podfic's player is not in AO3's download; add its audio back as a
+    // page at the end. Failing that, the work is still saved as AO3 sent it.
+    if !meta.audio.is_empty() {
+        match archive::add_podfic_page(&bytes, &meta.audio) {
+            Ok(with_audio) => bytes = with_audio,
+            Err(e) => eprintln!("could not add the podfic page to work {work_id}: {e:#}"),
+        }
+    }
 
     let dir = { state.library_dir.lock().map_err(err)?.clone() };
     std::fs::create_dir_all(&dir).map_err(err)?;

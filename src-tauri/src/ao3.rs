@@ -66,6 +66,9 @@ pub struct WorkMeta {
     /// The HTML link from the same menu, the fallback when EPUB downloads
     /// are unavailable.
     pub html_download_url: Option<String>,
+    /// Podfic audio on the work's page: embedded players' files and direct
+    /// links to audio files. AO3's downloads leave embedded players out.
+    pub audio: Vec<String>,
 }
 
 /// One page of the user's Bookmarks or Marked for Later list.
@@ -561,6 +564,27 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
     let download_url = download_link(".epub");
     let html_download_url = download_link(".html");
 
+    // Audio in the work itself (notes and text), not in AO3's own menus.
+    let scope = doc.select(&sel("#workskin")).next();
+    let players = sel("audio[src], audio source[src], video[src], video source[src]");
+    let links = sel("a[href]");
+    let (player_els, link_els): (Vec<scraper::ElementRef>, Vec<scraper::ElementRef>) = match scope {
+        Some(ws) => (ws.select(&players).collect(), ws.select(&links).collect()),
+        None => (doc.select(&players).collect(), doc.select(&links).collect()),
+    };
+    let mut found: Vec<(String, bool)> = Vec::new();
+    for el in player_els {
+        if let Some(src) = el.value().attr("src") {
+            found.push((absolute(src), true));
+        }
+    }
+    for el in link_els {
+        if let Some(href) = el.value().attr("href") {
+            found.push((href.to_string(), false));
+        }
+    }
+    let audio = crate::epubgen::audio_urls(found.iter().map(|(u, p)| (u.as_str(), *p)));
+
     Some(WorkMeta {
         work_id,
         title,
@@ -572,6 +596,7 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
         summary,
         download_url,
         html_download_url,
+        audio,
     })
 }
 

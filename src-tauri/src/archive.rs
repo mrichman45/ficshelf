@@ -140,6 +140,59 @@ pub fn cbz_pages(path: &Path) -> Result<Vec<String>> {
 
 /// Zip files into an EPUB. The `mimetype` entry is written first and
 /// uncompressed, as the EPUB standard requires; everything else is deflated.
+/// Add FicShelf's podfic page (players and links for `urls`) to the end of
+/// an EPUB, unless every one of those links is already in the book.
+pub fn add_podfic_page(epub: &[u8], urls: &[String]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(epub))?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(zip.len() + 1);
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i)?;
+        if f.is_dir() || f.name() == "mimetype" {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(f.size() as usize);
+        f.read_to_end(&mut bytes)?;
+        files.push((f.name().to_string(), bytes));
+    }
+
+    let text = |name: &str| files.iter().find(|(n, _)| n == name).map(|(_, b)| String::from_utf8_lossy(b).into_owned());
+    // Links the book already carries need no second copy.
+    let in_book = |url: &str| {
+        let escaped = crate::epubgen::xml_escape(url);
+        files.iter().any(|(n, b)| {
+            (n.ends_with(".xhtml") || n.ends_with(".html") || n.ends_with(".htm"))
+                && (contains(b, url.as_bytes()) || contains(b, escaped.as_bytes()))
+        })
+    };
+    let missing: Vec<String> = urls.iter().filter(|u| !in_book(u)).cloned().collect();
+    if missing.is_empty() {
+        return Ok(epub.to_vec());
+    }
+
+    let container = text("META-INF/container.xml").ok_or_else(|| anyhow::anyhow!("no container.xml"))?;
+    let opf_path = crate::epubgen::rootfile_path(&container).ok_or_else(|| anyhow::anyhow!("no rootfile"))?;
+    let opf = text(&opf_path).ok_or_else(|| anyhow::anyhow!("no OPF at {opf_path}"))?;
+    let new_opf = crate::epubgen::opf_with_page(&opf, "ficshelf-podfic", "ficshelf-podfic.xhtml")
+        .ok_or_else(|| anyhow::anyhow!("OPF has no manifest or spine"))?;
+    let dir = opf_path.rsplit_once('/').map(|(d, _)| format!("{d}/")).unwrap_or_default();
+    let page_path = format!("{dir}ficshelf-podfic.xhtml");
+
+    for f in files.iter_mut() {
+        if f.0 == opf_path {
+            f.1 = new_opf.clone().into_bytes();
+        }
+    }
+    files.retain(|(n, _)| *n != page_path);
+    files.push((page_path, crate::epubgen::podfic_xhtml(&missing).into_bytes()));
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    write_epub(&refs)
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
+}
+
 pub fn write_epub(files: &[(&str, &[u8])]) -> Result<Vec<u8>> {
     use std::io::Write;
     use zip::write::SimpleFileOptions;

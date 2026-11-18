@@ -3580,7 +3580,8 @@ function webLinkClicked(e, book) {
   if (!/^https?:\/\//i.test(href)) return;
   e.preventDefault();
   e.stopPropagation();
-  if (AUDIO_LINK.test(new URL(href).pathname)) offerPodficSave(href, book);
+  // Links on FicShelf's own podfic page are audio whatever they end in.
+  if (AUDIO_LINK.test(new URL(href).pathname) || a.closest(".ficshelf-podfic")) offerPodficSave(href, book);
   else invoke("open_link", { url: href }).catch((err) => toast(String(err), true));
 }
 
