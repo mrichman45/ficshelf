@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 0.8.0
+
+The release candidate for 1.0.0: everything in the 1.0.0 list, ready for testing. When 1.0.0 is published, this version will offer it by itself.
+
 ## 1.0.0
 
 The first stable release.
