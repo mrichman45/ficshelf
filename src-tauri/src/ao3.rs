@@ -105,6 +105,9 @@ fn build_http() -> Result<reqwest::Client> {
         .gzip(true)
         // One connection is plenty and keeps our footprint obvious.
         .pool_max_idle_per_host(1)
+        // Phones cut idle connections while the app is in the background;
+        // reusing one gives "connection abort". Let idle ones go quickly.
+        .pool_idle_timeout(Duration::from_secs(20))
         .build()
         .context("building the HTTP client")
 }
@@ -248,12 +251,26 @@ impl Ao3Client {
         Slot { last }
     }
 
+    /// A GET that survives the phone having cut the connection: if it fails
+    /// before AO3 has answered anything (a dropped or aborted connection, so
+    /// nothing reached AO3), it is tried once more after the usual gap. Any
+    /// answer from AO3, 429 included, is never retried. Called with the
+    /// pacing slot held, so the retry is paced too.
+    async fn get_once_more(&self, url: &str) -> reqwest::Result<reqwest::Response> {
+        match self.http().get(url).send().await {
+            Ok(r) => Ok(r),
+            Err(e) if e.is_connect() || (e.is_request() && !e.is_timeout()) => {
+                tokio::time::sleep(MIN_GAP).await;
+                self.http().get(url).send().await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     async fn get_text(&self, url: &str) -> Result<String> {
         let _slot = self.slot().await;
         let resp = self
-            .http()
-            .get(url)
-            .send()
+            .get_once_more(url)
             .await
             .with_context(|| format!("requesting {url}"))?;
 
@@ -382,9 +399,7 @@ impl Ao3Client {
     async fn fetch_download(&self, url: &str, work_id: i64) -> std::result::Result<Vec<u8>, DownloadError> {
         let _slot = self.slot().await;
         let resp = self
-            .http()
-            .get(url)
-            .send()
+            .get_once_more(url)
             .await
             .map_err(|e| DownloadError::Failed(format!("could not reach AO3: {e}")))?;
 
