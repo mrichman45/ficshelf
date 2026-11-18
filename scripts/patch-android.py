@@ -262,6 +262,29 @@ def patch_file_provider(activity: pathlib.Path) -> int:
     xml = main / "res" / "xml" / "ficshelf_file_paths.xml"
     xml.parent.mkdir(parents=True, exist_ok=True)
     xml.write_text(PATHS_XML)
+    return allow_cleartext(manifest)
+
+
+def allow_cleartext(manifest: pathlib.Path) -> int:
+    """Let the WebView load plain http:// images and audio.
+
+    Works embed cover art, fanart and podfic players from old personal
+    hosts that never moved to https. Release builds of the Tauri template
+    turn cleartext off, so the WebView refused them (broken images, a podfic
+    player stuck at 0:00) while a desktop browser showed them fine.
+    """
+    text = manifest.read_text()
+    attr = re.search(r'android:usesCleartextTraffic="[^"]*"', text)
+    if attr:
+        text = text[: attr.start()] + 'android:usesCleartextTraffic="true"' + text[attr.end():]
+    else:
+        app = re.search(r"<application\b", text)
+        if not app:
+            print("no <application> in AndroidManifest.xml", file=sys.stderr)
+            return 1
+        text = text[: app.end()] + '\n        android:usesCleartextTraffic="true"' + text[app.end():]
+    manifest.write_text(text)
+    print(f"allowed http:// in {manifest}")
     return 0
 
 
