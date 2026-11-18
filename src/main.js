@@ -1,7 +1,7 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen as onEvent } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog, ask } from "@tauri-apps/plugin-dialog";
 import ePub from "epubjs";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -3448,6 +3448,97 @@ document.querySelectorAll("[data-storage]").forEach((b) =>
   }),
 );
 
+// ------------------------------------------------------- backup/restore
+
+function ficshelfPrefs() {
+  const out = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("ficshelf.") && k !== LOG_KEY) out[k] = localStorage.getItem(k);
+  }
+  return out;
+}
+
+function showBackupProgress(title) {
+  $("#task-title").textContent = title;
+  $("#task-amount").textContent = "";
+  busy($("#task-panel"), true);
+}
+
+onEvent("backup-progress", ({ payload }) => {
+  const { done = 0, total = 0 } = payload || {};
+  if ($("#task-panel").hidden) return;
+  $("#task-amount").textContent = total ? `${megabytes(done)} of ${megabytes(total)}` : "";
+  busy($("#task-panel"), true, total ? done / total : undefined);
+}).catch(() => {});
+
+async function makeBackup(withBooks) {
+  let dest = null;
+  if (!IS_ANDROID) {
+    const day = new Date().toISOString().slice(0, 10);
+    dest = await saveDialog({
+      defaultPath: `FicShelf backup ${day}.zip`,
+      filters: [{ name: "FicShelf backup", extensions: ["zip"] }],
+    });
+    if (!dest) return;
+  }
+  const status = $("#backup-status");
+  status.textContent = "";
+  showBackupProgress(withBooks ? "Backing up everything…" : "Backing up reading data…");
+  try {
+    const made = await invoke("backup_make", { withBooks, prefs: ficshelfPrefs(), dest });
+    const books = withBooks ? `, with ${made.books} book file${made.books === 1 ? "" : "s"}` : "";
+    status.textContent = `Saved ${megabytes(made.bytes)}${books} to ${made.path}`;
+    toast("Backup saved.");
+  } catch (e) {
+    logError(`backup (${withBooks ? "everything" : "reading data"})`, e);
+    toast(`Backup failed: ${e}`, true, false);
+  } finally {
+    busy($("#task-panel"), false);
+  }
+}
+
+$("#btn-backup-data").addEventListener("click", () => makeBackup(false));
+$("#btn-backup-all").addEventListener("click", () => makeBackup(true));
+
+$("#btn-restore").addEventListener("click", async () => {
+  const src = await openDialog({
+    multiple: false,
+    filters: IS_ANDROID ? undefined : [{ name: "FicShelf backup", extensions: ["zip"] }],
+  });
+  if (!src) return;
+  const ok = await confirmAsk(
+    "Restore this backup?\n\nYour current library list, positions, highlights, notes and settings on this device are replaced by the backup's. (The current library is kept aside as library.sqlite3.before-restore, just in case.)",
+  );
+  if (!ok) return;
+  showBackupProgress("Restoring…");
+  try {
+    const r = await invoke("backup_restore", { src: String(src) });
+    // The front end's own settings come back too; then start fresh.
+    for (const [k, v] of Object.entries(r.prefs || {})) {
+      if (k.startsWith("ficshelf.") && typeof v === "string") localStorage.setItem(k, v);
+    }
+    const made = new Date((r.created || 0) * 1000).toLocaleString();
+    sessionStorage.setItem(
+      "ficshelf.restored",
+      `Restored the backup from ${made}: ${r.books} books${r.files ? `, ${r.files} files put back` : ""}.`,
+    );
+    location.reload();
+  } catch (e) {
+    busy($("#task-panel"), false);
+    logError("restore", e);
+    toast(`Restore failed: ${e}`, true, false);
+  }
+});
+
+{
+  const msg = sessionStorage.getItem("ficshelf.restored");
+  if (msg) {
+    sessionStorage.removeItem("ficshelf.restored");
+    setTimeout(() => toast(msg), 600);
+  }
+}
+
 $("#btn-log-copy").addEventListener("click", async () => {
   const list = readLog();
   const text = list.length
@@ -3637,9 +3728,94 @@ const AUDIO_EXTS = ["mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "w
 const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
 const SLEEP_STEPS = [0, 15, 30, 45, 60, -1]; // minutes; -1 = end of file
 
+/// On Android, podfics play through the phone's own media player (see
+/// scripts/patch-android.py), which keeps going with the screen off and has
+/// lock-screen and notification controls. This stands in for the <audio>
+/// element: the same properties and events, driven by polling the native
+/// player's state.
+class NativeAudio extends EventTarget {
+  constructor(bridge) {
+    super();
+    this.bridge = bridge;
+    this.s = { loaded: false, pos: 0, dur: NaN, playing: false, ended: false };
+    this.rate = 1;
+    this.error = null;
+    this.timer = null;
+  }
+  get currentTime() {
+    return this.s.pos;
+  }
+  set currentTime(v) {
+    this.s.pos = v;
+    this.bridge.audioSeek(Number(v) || 0);
+  }
+  get duration() {
+    return this.s.dur;
+  }
+  get paused() {
+    return !this.s.playing;
+  }
+  get ended() {
+    return this.s.ended;
+  }
+  get playbackRate() {
+    return this.rate;
+  }
+  set playbackRate(r) {
+    this.rate = r;
+    this.bridge.audioRate(r);
+    this.dispatchEvent(new Event("ratechange"));
+  }
+  /// Load a file by its path on the phone.
+  open(path, title, artist) {
+    this.error = null;
+    const problem = this.bridge.audioLoad(path, title || "", artist || "");
+    if (problem) {
+      this.error = { code: 4, message: problem };
+      setTimeout(() => this.dispatchEvent(new Event("error")), 0);
+      return;
+    }
+    this.poll(true);
+    this.startPolling();
+    setTimeout(() => this.dispatchEvent(new Event("loadedmetadata")), 0);
+  }
+  play() {
+    this.bridge.audioPlay();
+    setTimeout(() => this.poll(), 150);
+    return Promise.resolve();
+  }
+  pause() {
+    this.bridge.audioPause();
+    setTimeout(() => this.poll(), 150);
+  }
+  startPolling() {
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.poll(), 500);
+  }
+  poll(quiet = false) {
+    let next;
+    try {
+      next = JSON.parse(this.bridge.audioState());
+    } catch {
+      return;
+    }
+    const was = this.s;
+    this.s = { ...next, dur: next.dur == null ? NaN : next.dur };
+    if (quiet) return;
+    if (next.playing && !was.playing) this.dispatchEvent(new Event("play"));
+    if (!next.playing && was.playing) this.dispatchEvent(new Event(next.ended ? "ended" : "pause"));
+    if (next.playing || next.pos !== was.pos) this.dispatchEvent(new Event("timeupdate"));
+  }
+}
+
+const nativeAudio =
+  IS_ANDROID && window.FicShelfAndroid && typeof window.FicShelfAndroid.audioLoad === "function"
+    ? new NativeAudio(window.FicShelfAndroid)
+    : null;
+
 const listen = {
   book: null,
-  audio: $("#listen-audio"),
+  audio: nativeAudio || $("#listen-audio"),
   seeking: false,
   lastSaved: 0,
   sleepIndex: 0,
@@ -3693,7 +3869,17 @@ async function openPodfic(book) {
   setMediaSession(fresh);
   showListen();
 
-  const start = parseFloat(fresh.position || "0") || 0;
+  let start = parseFloat(fresh.position || "0") || 0;
+  // The phone's player keeps its own note of the place on pause and when
+  // the app is swiped away, which is newer if the page could not save it.
+  if (nativeAudio) {
+    try {
+      const saved = JSON.parse(window.FicShelfAndroid.audioSaved());
+      if (saved.path === fresh.path && saved.at > (fresh.last_opened_at || 0) * 1000) start = saved.pos;
+    } catch {
+      /* nothing saved */
+    }
+  }
   a.addEventListener(
     "loadedmetadata",
     () => {
@@ -3736,6 +3922,10 @@ async function loadPodficSource(book) {
   }
   if (!IS_ANDROID) {
     a.src = convertFileSrc(book.path);
+    return;
+  }
+  if (nativeAudio) {
+    nativeAudio.open(book.path, book.title, book.author);
     return;
   }
   $("#listen-title").textContent = book.title;

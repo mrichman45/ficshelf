@@ -22,6 +22,12 @@ pub fn work_meta_url(work_id: u64) -> String {
     format!("{BASE}/works/{work_id}?view_adult=true")
 }
 
+/// The whole work on one page. Read only for multi-chapter podfics, whose
+/// later chapters carry their own audio.
+pub fn work_full_url(work_id: u64) -> String {
+    format!("{BASE}/works/{work_id}?view_adult=true&view_full_work=true")
+}
+
 /// Which of the signed-in user's own lists to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shelf {

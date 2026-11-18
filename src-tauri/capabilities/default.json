@@ -12,6 +12,7 @@
     "opener:allow-open-path",
     "opener:allow-open-url",
     "dialog:allow-ask",
-    "fs:allow-read-file"
+    "fs:allow-read-file",
+    "dialog:allow-save"
   ]
 }

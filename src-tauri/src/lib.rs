@@ -9,6 +9,7 @@ mod ao3;
 mod ao3_parse;
 mod archive;
 mod audiometa;
+mod backup;
 mod creds;
 mod db;
 mod epubgen;
@@ -1338,6 +1339,83 @@ fn set_phone_storage(app: tauri::AppHandle, state: State<'_, AppState>, choice: 
     Ok(path)
 }
 
+// ---------------------------------------------------------------- backup
+
+/// Make a backup. `dest` is where to write it (from a save dialog); on a
+/// phone it is left out and the backup goes to Download/FicShelf.
+#[tauri::command]
+async fn backup_make(
+    app: tauri::AppHandle,
+    with_books: bool,
+    prefs: serde_json::Value,
+    dest: Option<String>,
+) -> Result<backup::Made, String> {
+    let data_dir = app.path().app_data_dir().map_err(err)?;
+    let dest = match dest.filter(|d| !d.trim().is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let stamp = epubgen::iso_utc(db::now()).replace(['T', ':'], " ").replace('Z', "");
+            let stamp = stamp.trim().get(..16).unwrap_or(stamp.trim()).replace(' ', "_");
+            PathBuf::from("/storage/emulated/0/Download/FicShelf").join(format!("FicShelf backup {stamp}.zip"))
+        }
+    };
+    let version = app.package_info().version.to_string();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let state = handle.state::<AppState>();
+        let library_dir = state.library_dir.lock().map_err(err)?.clone();
+        let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        backup::make(&state.conn, &data_dir, &library_dir, &dest, with_books, prefs, &version, |done, total| {
+            if last.elapsed() >= std::time::Duration::from_millis(250) || done == total {
+                last = std::time::Instant::now();
+                handle.emit("backup-progress", serde_json::json!({ "done": done, "total": total })).ok();
+            }
+        })
+        .map_err(chain)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Restore from a backup file (a path, or a content:// URI on a phone).
+#[tauri::command]
+async fn backup_restore(app: tauri::AppHandle, src: String) -> Result<backup::Restored, String> {
+    use tauri_plugin_fs::FsExt;
+    let data_dir = app.path().app_data_dir().map_err(err)?;
+    // Copy it in first: a zip needs to be read in any order, which a
+    // phone's shared file does not promise.
+    let local = data_dir.join(".restore-incoming.zip");
+    {
+        let file_path: tauri_plugin_fs::FilePath = src.parse().map_err(err)?;
+        let mut opts = tauri_plugin_fs::OpenOptions::new();
+        opts.read(true);
+        let mut f = app
+            .fs()
+            .open(file_path, opts)
+            .map_err(|e| format!("could not open that file: {e}"))?;
+        let mut out = std::fs::File::create(&local).map_err(err)?;
+        std::io::copy(&mut f, &mut out).map_err(|e| format!("could not read that file: {e}"))?;
+    }
+    let handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let state = handle.state::<AppState>();
+        let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        backup::restore(&state.conn, &state.library_dir, &data_dir, &local, |done, total| {
+            if last.elapsed() >= std::time::Duration::from_millis(250) || done == total {
+                last = std::time::Instant::now();
+                handle.emit("backup-progress", serde_json::json!({ "done": done, "total": total })).ok();
+            }
+        })
+        .map_err(chain)
+    })
+    .await
+    .map_err(err)?;
+    std::fs::remove_file(app.path().app_data_dir().map_err(err)?.join(".restore-incoming.zip")).ok();
+    result
+}
+
 // -------------------------------------------------------------------- run
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1370,6 +1448,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            backup_make,
+            backup_restore,
             set_phone_storage,
             save_podfic_url,
             import_paths,

@@ -398,6 +398,30 @@
         </div>
 
         <div class="setting">
+          <h3>Backup and restore</h3>
+          <p class="muted">
+            A backup is one file with your library list, reading positions,
+            bookmarks, highlights, notes, edited details and settings.
+            <strong>Everything</strong> also packs in the books, AO3 downloads
+            and podfics kept inside FicShelf, so it can be large. Books you
+            added from elsewhere on the device are not copied.
+          </p>
+          <div class="row">
+            <button id="btn-backup-data">Back up reading data</button>
+            <button id="btn-backup-all">Back up everything</button>
+          </div>
+          <div class="row">
+            <button id="btn-restore">Restore from a backup…</button>
+          </div>
+          <p class="muted android-only">
+            On this phone, backups are saved to <strong>Download/FicShelf</strong>.
+            Copy the file somewhere safe (a computer, Google Drive) to keep it
+            if the phone is lost or reset.
+          </p>
+          <p id="backup-status" class="muted"></p>
+        </div>
+
+        <div class="setting">
           <h3>Error log</h3>
           <p class="muted">
             Every error FicShelf shows is also written here, newest first, with

@@ -69,6 +69,8 @@ pub struct WorkMeta {
     /// Podfic audio on the work's page: embedded players' files and direct
     /// links to audio files. AO3's downloads leave embedded players out.
     pub audio: Vec<String>,
+    /// Tagged or titled as a podfic.
+    pub podfic: bool,
 }
 
 /// One page of the user's Bookmarks or Marked for Later list.
@@ -286,7 +288,26 @@ impl Ao3Client {
         let url = p::work_meta_url(work_id as u64);
         let html = self.get_text(&url).await?;
 
-        if let Some(meta) = parse_work_page(&html, work_id) {
+        if let Some(mut meta) = parse_work_page(&html, work_id) {
+            // A multi-chapter podfic usually has audio in every chapter, and
+            // this page is only the first. One more paced request for the
+            // whole work collects the rest. If it fails, chapter one's audio
+            // is still kept.
+            if meta.chapters_posted > 1 && (meta.podfic || !meta.audio.is_empty()) {
+                match self.get_text(&p::work_full_url(work_id as u64)).await {
+                    Ok(full) => {
+                        let all = page_audio(&Html::parse_document(&full));
+                        let mut merged = all;
+                        for u in std::mem::take(&mut meta.audio) {
+                            if !merged.contains(&u) {
+                                merged.push(u);
+                            }
+                        }
+                        meta.audio = merged;
+                    }
+                    Err(e) => eprintln!("could not read all chapters of work {work_id} for podfic audio: {e:#}"),
+                }
+            }
             return Ok(meta);
         }
 
@@ -564,26 +585,12 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
     let download_url = download_link(".epub");
     let html_download_url = download_link(".html");
 
-    // Audio in the work itself (notes and text), not in AO3's own menus.
-    let scope = doc.select(&sel("#workskin")).next();
-    let players = sel("audio[src], audio source[src], video[src], video source[src]");
-    let links = sel("a[href]");
-    let (player_els, link_els): (Vec<scraper::ElementRef>, Vec<scraper::ElementRef>) = match scope {
-        Some(ws) => (ws.select(&players).collect(), ws.select(&links).collect()),
-        None => (doc.select(&players).collect(), doc.select(&links).collect()),
-    };
-    let mut found: Vec<(String, bool)> = Vec::new();
-    for el in player_els {
-        if let Some(src) = el.value().attr("src") {
-            found.push((absolute(src), true));
-        }
-    }
-    for el in link_els {
-        if let Some(href) = el.value().attr("href") {
-            found.push((href.to_string(), false));
-        }
-    }
-    let audio = crate::epubgen::audio_urls(found.iter().map(|(u, p)| (u.as_str(), *p)));
+    let audio = page_audio(&doc);
+    // Tagged as a podfic, or calling itself one.
+    let podfic = title.to_ascii_lowercase().contains("podfic")
+        || doc
+            .select(&sel("dd.freeform.tags a.tag"))
+            .any(|a| text_of(a).to_ascii_lowercase().contains("podfic"));
 
     Some(WorkMeta {
         work_id,
@@ -597,7 +604,33 @@ fn parse_work_page(html: &str, work_id: i64) -> Option<WorkMeta> {
         download_url,
         html_download_url,
         audio,
+        podfic,
     })
+}
+
+/// Podfic audio in a work page's own content (notes and text, not AO3's
+/// menus): embedded players' files and direct links to audio files.
+fn page_audio(doc: &Html) -> Vec<String> {
+    let scope = doc.select(&sel("#workskin")).next();
+    let players = sel("audio[src], audio source[src], video[src], video source[src]");
+    let links = sel("a[href]");
+    let (player_els, link_els): (Vec<scraper::ElementRef>, Vec<scraper::ElementRef>) = match scope {
+        Some(ws) => (ws.select(&players).collect(), ws.select(&links).collect()),
+        None => (doc.select(&players).collect(), doc.select(&links).collect()),
+    };
+    // Players and links in page order, so chapter 1's audio comes first.
+    let mut found: Vec<(String, bool)> = Vec::new();
+    for el in player_els {
+        if let Some(src) = el.value().attr("src") {
+            found.push((absolute(src), true));
+        }
+    }
+    for el in link_els {
+        if let Some(href) = el.value().attr("href") {
+            found.push((href.to_string(), false));
+        }
+    }
+    crate::epubgen::audio_urls(found.iter().map(|(u, p)| (u.as_str(), *p)))
 }
 
 enum DownloadError {
