@@ -9,7 +9,6 @@ The first stable release.
 - **Big libraries**: on a phone, Add folder can read books where they are
   (no copies), folders import in the background with progress, and covers
   are kept as thumbnails.
-
 - **New version notices.** FicShelf checks for a newer release once a day
   (one request to GitHub, never to AO3) and offers the download for your
   device. It can be switched off in Settings → About FicShelf.
