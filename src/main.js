@@ -3426,6 +3426,7 @@ const listen = {
   sleepIndex: 0,
   sleepTimer: null,
   sleepAt: 0,
+  blobUrl: null,
 };
 
 function clock(sec) {
@@ -3442,45 +3443,98 @@ async function openPodfic(book) {
     toast(`That file is no longer at ${book.path}`, true);
     return;
   }
-  if (listen.book?.id !== book.id) {
-    // open_book lets the file through the asset protocol.
-    const { book: fresh } = await call("open_book", { id: book.id });
-    savePodficPlace(true);
-    listen.book = fresh;
-    const a = listen.audio;
-    $("#listen-error").hidden = true;
-    a.src = convertFileSrc(fresh.path);
-    a.playbackRate = Number(pref("podficSpeed", "1")) || 1;
-    const start = parseFloat(fresh.position || "0") || 0;
-    a.addEventListener(
-      "loadedmetadata",
-      () => {
-        // Start a few seconds back, so she hears where she left off.
-        if (start > 0 && start < a.duration - 1) a.currentTime = Math.max(0, start - 3);
-        renderPodfic();
-      },
-      { once: true },
-    );
-    $("#listen-title").textContent = fresh.title;
-    $("#listen-author").textContent = fresh.author || "";
-    $("#mini-title").textContent = fresh.title;
-    const art = $("#listen-art");
-    art.innerHTML = "<span>🎧</span>";
-    if (fresh.has_cover) {
-      invoke("book_cover", { id: fresh.id })
-        .then((url) => {
-          if (url && listen.book?.id === fresh.id) {
-            const img = document.createElement("img");
-            img.src = url;
-            img.alt = "";
-            art.replaceChildren(img);
-          }
-        })
-        .catch(() => {});
-    }
-    setMediaSession(fresh);
+  if (listen.book?.id === book.id) {
+    showListen();
+    return;
   }
+  // open_book lets the file through the asset protocol (computers).
+  const { book: fresh } = await call("open_book", { id: book.id });
+  savePodficPlace(true);
+  listen.audio.pause();
+  listen.book = fresh;
+  const a = listen.audio;
+  $("#listen-error").hidden = true;
+  $("#listen-title").textContent = fresh.title;
+  $("#listen-author").textContent = fresh.author || "";
+  $("#mini-title").textContent = fresh.title;
+  const art = $("#listen-art");
+  art.innerHTML = "<span>🎧</span>";
+  if (fresh.has_cover) {
+    invoke("book_cover", { id: fresh.id })
+      .then((url) => {
+        if (url && listen.book?.id === fresh.id) {
+          const img = document.createElement("img");
+          img.src = url;
+          img.alt = "";
+          art.replaceChildren(img);
+        }
+      })
+      .catch(() => {});
+  }
+  setMediaSession(fresh);
   showListen();
+
+  const start = parseFloat(fresh.position || "0") || 0;
+  a.addEventListener(
+    "loadedmetadata",
+    () => {
+      // Start a few seconds back, so she hears where she left off.
+      if (start > 0 && start < a.duration - 1) a.currentTime = Math.max(0, start - 3);
+      a.playbackRate = Number(pref("podficSpeed", "1")) || 1;
+      renderPodfic();
+    },
+    { once: true },
+  );
+  try {
+    await loadPodficSource(fresh);
+  } catch (e) {
+    $("#listen-error").hidden = false;
+    $("#listen-error").textContent = `Could not load this file: ${typeof e === "string" ? e : e?.message || e}`;
+  }
+}
+
+const AUDIO_MIME = {
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  m4b: "audio/mp4",
+  aac: "audio/aac",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  wav: "audio/wav",
+};
+
+/// Point the player at a podfic. On a computer the file streams through the
+/// asset protocol. Android's WebView never delivers audio that way (the
+/// request just hangs), so there the file is read in over IPC, like EPUBs,
+/// and played from memory.
+async function loadPodficSource(book) {
+  const a = listen.audio;
+  if (listen.blobUrl) {
+    URL.revokeObjectURL(listen.blobUrl);
+    listen.blobUrl = null;
+  }
+  if (!IS_ANDROID) {
+    a.src = convertFileSrc(book.path);
+    return;
+  }
+  $("#listen-title").textContent = book.title;
+  $("#listen-now").textContent = "Loading…";
+  a.removeAttribute("src");
+  listen.loading = true;
+  let bytes;
+  try {
+    bytes = await invoke("book_bytes", { id: book.id });
+  } finally {
+    listen.loading = false;
+  }
+  if (listen.book?.id !== book.id) return; // she picked another meanwhile
+  const ext = book.path.split(".").pop().toLowerCase();
+  const blob = new Blob([bytes], { type: AUDIO_MIME[ext] || "audio/mpeg" });
+  listen.blobUrl = URL.createObjectURL(blob);
+  a.src = listen.blobUrl;
+  a.load();
 }
 
 function showListen() {
@@ -3530,7 +3584,7 @@ function savePodficPlace(force = false) {
 
 function togglePlay() {
   const a = listen.audio;
-  if (!listen.book) return;
+  if (!listen.book || listen.loading) return;
   if (a.paused) {
     a.play().catch((e) => {
       $("#listen-error").hidden = false;
