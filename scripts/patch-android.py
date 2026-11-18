@@ -36,6 +36,9 @@ MARK = "// FicShelf: volume-button page turning"
 
 IMPORTS = [
     "android.content.Intent",
+    "android.os.Build",
+    "android.os.Environment",
+    "android.provider.Settings",
     "android.net.Uri",
     "androidx.core.content.FileProvider",
     "java.io.File",
@@ -69,6 +72,27 @@ MEMBERS = f"""
 
       @JavascriptInterface
       fun pickFolder() {{ runOnUiThread {{ ficshelfPickFolder.launch(null) }} }}
+
+      // Read in place: with All files access, books are opened straight
+      // from the folder she picks, by path, so nothing is copied.
+      @JavascriptInterface
+      fun hasAllFilesAccess(): Boolean =
+        Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+
+      @JavascriptInterface
+      fun requestAllFilesAccess() {{
+        runOnUiThread {{
+          try {{
+            startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+              Uri.parse("package:" + packageName)))
+          }} catch (e: Exception) {{
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+          }}
+        }}
+      }}
+
+      @JavascriptInterface
+      fun pickFolderPath() {{ runOnUiThread {{ ficshelfPickFolderPath.launch(null) }} }}
 
       @JavascriptInterface
       fun openExternally(path: String, mime: String): Boolean {{
@@ -118,6 +142,36 @@ MEMBERS = f"""
       @JavascriptInterface
       fun audioSaved(): String = FicShelfAudio.saved(this@MainActivity)
     }}, "FicShelfAndroid")
+  }}
+
+  // FicShelf: Add folder, read in place. The picker answers with a tree
+  // link; for the phone's own storage and SD cards that names a real
+  // folder, which is passed back as a path ("" when it cannot be).
+  private val ficshelfPickFolderPath =
+    registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {{ tree ->
+      val path = if (tree == null) null else ficshelfTreePath(tree) ?: ""
+      val arg = if (path == null) "null" else JSONObject.quote(path)
+      ficshelfWebView?.post {{
+        ficshelfWebView?.evaluateJavascript(
+          "window.__ficshelfFolderPath && window.__ficshelfFolderPath(" + arg + ")", null)
+      }}
+    }}
+
+  private fun ficshelfTreePath(tree: Uri): String? {{
+    return try {{
+      val id = DocumentsContract.getTreeDocumentId(tree)
+      if (id.startsWith("raw:")) return id.removePrefix("raw:")
+      val colon = id.indexOf(':')
+      if (colon < 0) return null
+      val volume = id.substring(0, colon)
+      val rel = id.substring(colon + 1)
+      val base = if (volume.equals("primary", ignoreCase = true))
+        Environment.getExternalStorageDirectory().absolutePath
+      else "/storage/" + volume
+      if (rel.isEmpty()) base else base + "/" + rel
+    }} catch (e: Exception) {{
+      null
+    }}
   }}
 
   // FicShelf: Add folder
@@ -735,7 +789,8 @@ class FicShelfAudioService : Service() {
 }
 """
 
-AUDIO_MANIFEST_PERMS = """    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+AUDIO_MANIFEST_PERMS = """    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 """

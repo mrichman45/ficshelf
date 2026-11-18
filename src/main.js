@@ -932,22 +932,92 @@ async function addAndroidFolder() {
     return;
   }
   const report = { added: [], skipped: [], failed: [] };
+  busy($("#task-panel"), true, 0);
   for (const [i, item] of items.entries()) {
-    toast(`Adding ${i + 1} of ${items.length}: ${item.name}`);
+    $("#task-title").textContent = `Copying ${item.name}`;
+    $("#task-amount").textContent = `${i + 1} of ${items.length}`;
+    busy($("#task-panel"), true, i / items.length);
     try {
       report.added.push(await invoke("import_uri", { uri: item.uri, folder: item.folder }));
     } catch (e) {
       report.failed.push([item.name, typeof e === "string" ? e : e?.message || String(e)]);
     }
   }
+  busy($("#task-panel"), false);
+  for (const [file, why] of report.failed) logError(`add folder (${file})`, why);
   await refreshLibrary();
   reportImport(report);
+}
+
+// A big folder comes in in the background, with a progress panel.
+onEvent("import-progress", ({ payload }) => {
+  const { done = 0, total = 0, name = "" } = payload || {};
+  if ($("#task-panel").hidden) return;
+  $("#task-amount").textContent = total ? `${done} of ${total}` : "";
+  if (name) $("#task-title").textContent = `Adding ${name}`;
+  busy($("#task-panel"), true, total ? done / total : undefined);
+}).catch(() => {});
+
+async function importFolderInPlace(path) {
+  $("#task-title").textContent = "Looking through the folder…";
+  $("#task-amount").textContent = "";
+  busy($("#task-panel"), true);
+  try {
+    const report = await invoke("import_folder", { path });
+    await refreshLibrary();
+    reportImport(report);
+    for (const [file, why] of report.failed) logError(`add folder (${file})`, why);
+  } catch (e) {
+    logError("add folder", e);
+    toast(`Could not add the folder: ${e}`, true, false);
+  } finally {
+    busy($("#task-panel"), false);
+  }
+}
+
+let folderPathPicked = null;
+window.__ficshelfFolderPath = (path) => {
+  const resolve = folderPathPicked;
+  folderPathPicked = null;
+  resolve?.(path);
+};
+
+/// On a phone: read the folder in place (All files access, nothing copied),
+/// or copy it in as before.
+async function addAndroidFolderChoice() {
+  const bridge = window.FicShelfAndroid;
+  const canInPlace = bridge?.pickFolderPath && bridge?.hasAllFilesAccess;
+  const inPlace =
+    canInPlace &&
+    (await ask(
+      "Read the books from where they are, or copy them into FicShelf?\n\nReading in place uses no extra space (best for big folders), but needs FicShelf to have All files access, and moving the folder later means adding it again.\n\nCopying works without that permission but takes up the folder's size again.",
+      { title: "Add folder", okLabel: "Read in place", cancelLabel: "Copy into FicShelf" },
+    ));
+  if (!inPlace) return addAndroidFolder();
+  if (!bridge.hasAllFilesAccess()) {
+    const go = await ask(
+      "To read books where they are, Android needs you to switch on All files access for FicShelf.\n\nOn the next screen, turn on \"Allow access to manage all files\", come back, and tap Add folder again.",
+      { title: "One permission", okLabel: "Open settings", cancelLabel: "Not now" },
+    );
+    if (go) bridge.requestAllFilesAccess();
+    return;
+  }
+  const path = await new Promise((resolve) => {
+    folderPathPicked = resolve;
+    bridge.pickFolderPath();
+  });
+  if (path === null) return; // cancelled
+  if (!path) {
+    toast("That location can't be read in place. Pick a folder on the phone's storage or SD card, or choose Copy.", true);
+    return;
+  }
+  await importFolderInPlace(path);
 }
 
 $("#btn-add-folder").addEventListener("click", async () => {
   if (IS_ANDROID) {
     try {
-      await addAndroidFolder();
+      await addAndroidFolderChoice();
     } catch (e) {
       toast(`Could not add the folder: ${e?.message || e}`, true);
     }
@@ -955,9 +1025,7 @@ $("#btn-add-folder").addEventListener("click", async () => {
   }
   const dir = await openDialog({ directory: true });
   if (!dir) return;
-  const report = await call("scan_folder", { path: dir, recursive: true });
-  await refreshLibrary();
-  reportImport(report);
+  await importFolderInPlace(dir);
 });
 
 function withTimeout(promise, ms, message) {

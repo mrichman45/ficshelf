@@ -11,6 +11,7 @@ mod archive;
 mod audiometa;
 mod backup;
 mod cooldown;
+mod thumb;
 mod creds;
 mod db;
 mod epubgen;
@@ -166,6 +167,7 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
         }
     }
 
+    let cover = cover.map(|(b, m)| thumb::shrink(b, m));
     let new = db::NewBook {
         path: &path_str,
         format,
@@ -215,6 +217,50 @@ fn import_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<Import
         }
     }
     Ok(report)
+}
+
+/// Add every book in a folder (and the folders inside it) where it is,
+/// without copying, in the background, reporting progress as
+/// "import-progress" { done, total, name }. On a computer this is Add
+/// folder; on a phone it is "read in place", which needs All files access.
+#[tauri::command]
+async fn import_folder(app: tauri::AppHandle, path: String) -> Result<ImportReport, String> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(format!("FicShelf cannot open the folder {path}. On a phone, check that All files access is on."));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let state = app.state::<AppState>();
+        let mut files: Vec<PathBuf> = Vec::new();
+        collect_files(&root, true, &mut files, 0);
+        files.sort();
+        let total = files.len();
+        let mut report = ImportReport { added: vec![], skipped: vec![], failed: vec![] };
+        let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        for (i, file) in files.iter().enumerate() {
+            if last.elapsed() >= std::time::Duration::from_millis(200) || i + 1 == total {
+                last = std::time::Instant::now();
+                let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                app.emit("import-progress", serde_json::json!({ "done": i, "total": total, "name": name })).ok();
+            }
+            let folder = parent_name(file);
+            // The library is locked per book, so reading and syncing carry
+            // on while a big folder comes in.
+            let result = match state.conn.lock() {
+                Ok(conn) => import_one(&conn, file, folder.as_deref()).map_err(chain),
+                Err(e) => Err(e.to_string()),
+            };
+            match result {
+                Ok(book) => report.added.push(book),
+                Err(e) => report.failed.push((file.to_string_lossy().to_string(), e)),
+            }
+        }
+        app.emit("import-progress", serde_json::json!({ "done": total, "total": total, "name": "" })).ok();
+        Ok(report)
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Walk a folder and import everything readable in it.
@@ -1727,6 +1773,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            import_folder,
             check_app_update,
             report_available,
             report_problem,

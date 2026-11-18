@@ -30,6 +30,8 @@ url = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Cover thumbnails (decode the common formats, write JPEG).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 quick-xml = "0.36"
 percent-encoding = "2"
 
