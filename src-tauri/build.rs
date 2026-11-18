@@ -44,8 +44,13 @@ fn android_link_fixes() {
         .join(host)
         .join("sysroot/usr/lib")
         .join(triple);
-    println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-lib=static=c++_static");
-    println!("cargo:rustc-link-lib=static=c++abi");
+    // By full path, not as a search folder: that folder also holds static
+    // copies of Android's libc, libm and libdl, which the linker would
+    // then take instead of the system's shared ones.
+    for name in ["libc++_static.a", "libc++abi.a"] {
+        let file = lib.join(name);
+        assert!(file.exists(), "{} is missing from the NDK", file.display());
+        println!("cargo:rustc-link-arg={}", file.display());
+    }
     println!("cargo:rerun-if-env-changed=NDK_HOME");
 }

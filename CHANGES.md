@@ -2,9 +2,13 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.2
+
+- Fixes 1.1.0 and 1.1.1 closing straight away on Android phones.
+
 ## 1.1.1
 
-- Fixes 1.1.0 closing straight away on Android phones.
+- Withdrawn: still closed on Android.
 
 ## 1.1.0
 
