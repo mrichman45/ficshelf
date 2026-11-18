@@ -90,6 +90,11 @@ MEMBERS = f"""
         FicShelfAudio.load(this@MainActivity, path, title, artist)
 
       @JavascriptInterface
+      fun audioLoadUrl(url: String, title: String, artist: String) {{
+        FicShelfAudio.loadUrl(this@MainActivity, url, title, artist)
+      }}
+
+      @JavascriptInterface
       fun audioPlay() {{ runOnUiThread {{ FicShelfAudio.play() }} }}
 
       @JavascriptInterface
@@ -359,6 +364,8 @@ object FicShelfAudio {
   fun load(ctx: Context, p: String, t: String, a: String): String {
     app = ctx.applicationContext
     release()
+    preparing = false
+    lastError = ""
     return try {
       val mp = MediaPlayer()
       mp.setAudioAttributes(attrs)
@@ -384,8 +391,53 @@ object FicShelfAudio {
     }
   }
 
+  @Volatile private var preparing = false
+  @Volatile private var lastError = ""
+
+  /** Stream from the web (a podfic's player inside a work). Prepares in
+   *  the background; state() says when it is ready or what went wrong. */
+  @Synchronized
+  fun loadUrl(ctx: Context, url: String, t: String, a: String) {
+    app = ctx.applicationContext
+    release()
+    lastError = ""
+    preparing = true
+    try {
+      val mp = MediaPlayer()
+      mp.setAudioAttributes(attrs)
+      mp.setWakeMode(ctx.applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
+      mp.setDataSource(url)
+      mp.setOnPreparedListener {
+        preparing = false
+        update()
+      }
+      mp.setOnErrorListener { _, what, extra ->
+        preparing = false
+        lastError = "the stream could not be played (error $what/$extra)"
+        true
+      }
+      mp.setOnCompletionListener {
+        ended = true
+        savePlace()
+        update()
+      }
+      player = mp
+      path = url
+      title = t
+      artist = a
+      ended = false
+      ensureSession(ctx.applicationContext)
+      mp.prepareAsync()
+    } catch (e: Exception) {
+      preparing = false
+      player = null
+      lastError = e.message ?: e.toString()
+    }
+  }
+
   @Synchronized
   fun play() {
+    if (preparing) return
     val mp = player ?: return
     val ctx = app ?: return
     if (!requestFocus(ctx)) return
@@ -408,6 +460,7 @@ object FicShelfAudio {
 
   @Synchronized
   fun pause() {
+    if (preparing) return
     val mp = player ?: return
     if (mp.isPlaying) mp.pause()
     savePlace()
@@ -416,12 +469,14 @@ object FicShelfAudio {
 
   @Synchronized
   fun toggle() {
+    if (preparing) return
     val mp = player ?: return
     if (mp.isPlaying) pause() else play()
   }
 
   @Synchronized
   fun seek(seconds: Double) {
+    if (preparing) return
     val mp = player ?: return
     val ms = (seconds * 1000).toLong().coerceIn(0L, mp.duration.toLong().coerceAtLeast(0L))
     mp.seekTo(ms.toInt())
@@ -431,6 +486,7 @@ object FicShelfAudio {
 
   @Synchronized
   fun skip(seconds: Int) {
+    if (preparing) return
     val mp = player ?: return
     seek((mp.currentPosition + seconds * 1000).toDouble() / 1000.0)
   }
@@ -438,6 +494,7 @@ object FicShelfAudio {
   @Synchronized
   fun setRate(r: Float) {
     rate = r.coerceIn(0.5f, 3f)
+    if (preparing) return
     val mp = player ?: return
     // Changing speed on a paused player would start it, so a paused one
     // takes the new speed when it next plays.
@@ -476,12 +533,26 @@ object FicShelfAudio {
   @Synchronized
   fun state(): String {
     val o = JSONObject()
-    val mp = player
-    o.put("loaded", mp != null)
+    val mp = if (preparing) null else player
+    var pos = 0.0
+    var dur: Any = JSONObject.NULL
+    var playing = false
+    try {
+      if (mp != null) {
+        pos = mp.currentPosition / 1000.0
+        if (mp.duration > 0) dur = mp.duration / 1000.0
+        playing = mp.isPlaying
+      }
+    } catch (e: Exception) {
+      // A player in its error state answers nothing; report it as stopped.
+    }
+    o.put("loaded", player != null)
+    o.put("preparing", preparing)
+    o.put("error", lastError)
     o.put("path", path)
-    o.put("pos", (mp?.currentPosition ?: 0) / 1000.0)
-    o.put("dur", if (mp != null && mp.duration > 0) mp.duration / 1000.0 else JSONObject.NULL)
-    o.put("playing", mp?.isPlaying == true)
+    o.put("pos", pos)
+    o.put("dur", dur)
+    o.put("playing", playing)
     o.put("ended", ended)
     o.put("rate", rate.toDouble())
     return o.toString()
@@ -490,7 +561,8 @@ object FicShelfAudio {
   fun savePlace() {
     val ctx = app ?: return
     val mp = player ?: return
-    val pos = if (ended) 0.0 else mp.currentPosition / 1000.0
+    if (preparing) return
+    val pos = try { if (ended) 0.0 else mp.currentPosition / 1000.0 } catch (e: Exception) { return }
     ctx.getSharedPreferences("ficshelf_audio", Context.MODE_PRIVATE).edit()
       .putString("path", path)
       .putString("pos", pos.toString())
@@ -552,12 +624,12 @@ object FicShelfAudio {
   fun update() {
     val ctx = app ?: return
     val s = session ?: return
-    val mp = player
-    val playing = mp?.isPlaying == true
+    val mp = if (preparing) null else player
+    val playing = try { mp?.isPlaying == true } catch (e: Exception) { false }
     s.setMetadata(MediaMetadata.Builder()
       .putString(MediaMetadata.METADATA_KEY_TITLE, title)
       .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
-      .putLong(MediaMetadata.METADATA_KEY_DURATION, (mp?.duration ?: 0).toLong())
+      .putLong(MediaMetadata.METADATA_KEY_DURATION, try { (mp?.duration ?: 0).toLong() } catch (e: Exception) { 0L })
       .build())
     s.setPlaybackState(PlaybackState.Builder()
       .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
@@ -567,7 +639,7 @@ object FicShelfAudio {
         PlaybackState.ACTION_STOP)
       .setState(
         if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
-        (mp?.currentPosition ?: 0).toLong(),
+        try { (mp?.currentPosition ?: 0).toLong() } catch (e: Exception) { 0L },
         if (playing) rate else 0f)
       .build())
     if (FicShelfAudioService.running) {
@@ -582,7 +654,7 @@ object FicShelfAudio {
       nm.createNotificationChannel(
         NotificationChannel(CHANNEL, "Podfic playback", NotificationManager.IMPORTANCE_LOW))
     }
-    val playing = player?.isPlaying == true
+    val playing = try { !preparing && player?.isPlaying == true } catch (e: Exception) { false }
     fun action(icon: Int, label: String, act: String): Notification.Action {
       val i = Intent(ctx, FicShelfAudioService::class.java).setAction(act)
       val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

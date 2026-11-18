@@ -105,6 +105,9 @@ body {
   cursor: pointer;
   font: inherit;
 }
+.nav-links { display: flex; align-items: center; gap: 4px; }
+.nav-toggle, .nav-current { display: none; }
+#nav-scrim { display: none; }
 #nav button:hover { color: var(--ink); background: var(--panel-2); }
 #nav button.active { color: var(--ink); background: var(--panel-2); border-color: var(--line); }
 
@@ -427,14 +430,51 @@ body.reading #nav { display: none; }
   html, body { font-size: 15px; }
   .view { padding: 10px; }
 
-  #nav {
-    padding: 6px 8px;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  #nav::-webkit-scrollbar { display: none; }
-  #nav button { padding: 6px 10px; white-space: nowrap; }
+  /* Phones: a ☰ button and the current section's name; the sections drop
+     down as a list. */
+  #nav { padding: 4px 6px; position: relative; z-index: 40; }
   .brand { display: none; }
+  #nav .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    min-width: 44px;
+    position: relative;
+  }
+  /* A dot on ☰ when AO3 works have updates. */
+  #nav:has(#update-badge:not([hidden])) .nav-toggle::after {
+    content: "";
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .nav-current { display: block; font-weight: 600; color: var(--ink); padding-left: 4px; }
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 6px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  }
+  #nav.open .nav-links { display: flex; animation: nav-drop 0.16s ease-out; }
+  #nav .nav-links button { text-align: left; padding: 12px 14px; font-size: 16px; min-height: 48px; }
+  #nav-scrim:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 39; background: rgba(0, 0, 0, 0.3); }
+  @keyframes nav-drop {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: none; }
+  }
 
   input[type="search"] { min-width: 0; flex: 1 1 100%; }
 

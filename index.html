@@ -8,13 +8,18 @@
   </head>
   <body>
     <nav id="nav">
+      <button id="nav-menu" class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav-links">☰</button>
       <div class="brand">FicShelf</div>
-      <button data-view="library" class="active">Library</button>
-      <button data-view="search">Search AO3</button>
-      <button data-view="bookmarks">Bookmarks</button>
-      <button data-view="updates">Updates <span id="update-badge" hidden>0</span></button>
-      <button data-view="settings">Settings</button>
+      <span id="nav-current" class="nav-current">Library</span>
+      <div id="nav-links" class="nav-links">
+        <button data-view="library" class="active">Library</button>
+        <button data-view="search">Search AO3</button>
+        <button data-view="bookmarks">Bookmarks</button>
+        <button data-view="updates">Updates <span id="update-badge" hidden>0</span></button>
+        <button data-view="settings">Settings</button>
+      </div>
     </nav>
+    <div id="nav-scrim" hidden></div>
 
     <main>
       <!-- ------------------------------------------------- Library -->

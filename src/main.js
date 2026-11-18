@@ -321,13 +321,31 @@ function show(view) {
   document.body.classList.toggle("reading", view === "reader");
   if (view === "bookmarks" && !shelfState.loadedOnce) loadShelf(true);
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
-  $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  $$("#nav button[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  const current = document.querySelector(`#nav button[data-view="${view}"]`);
+  if (current) $("#nav-current").textContent = current.firstChild?.textContent?.trim() || "";
+  setNavMenu(false);
   window.__view = view; // for the error log: which screen she was on
   if (view === "settings") renderLog();
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
 }
 
-$$("#nav button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+$$("#nav button[data-view]").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+
+// On a phone the sections sit behind a ☰ menu rather than a row that has
+// to be scrolled sideways.
+function setNavMenu(open) {
+  const nav = document.getElementById("nav");
+  if (!nav) return;
+  nav.classList.toggle("open", open);
+  $("#nav-menu").setAttribute("aria-expanded", String(open));
+  $("#nav-scrim").hidden = !open;
+}
+$("#nav-menu").addEventListener("click", () => setNavMenu(!$("#nav").classList.contains("open")));
+$("#nav-scrim").addEventListener("click", () => setNavMenu(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("#nav").classList.contains("open")) setNavMenu(false);
+});
 
 // -------------------------------------------------------------- library
 
@@ -1760,6 +1778,22 @@ async function openEpub(book) {
     applyMargins(contents);
     contents.window?.addEventListener("wheel", wheelTurn, { passive: true });
     contents.document?.addEventListener("click", (e) => webLinkClicked(e, book), true);
+    // A podfic's player inside a work: on a phone, hand it to the native
+    // player so it keeps going with the screen off.
+    if (nativeAudio) {
+      contents.document?.addEventListener(
+        "play",
+        (e) => {
+          const el = e.target;
+          if (!(el instanceof contents.window.HTMLMediaElement)) return;
+          const src = el.currentSrc || el.src || el.querySelector("source")?.src || "";
+          if (!/^https?:\/\//i.test(src)) return;
+          el.pause();
+          streamPodfic(src, book);
+        },
+        true,
+      );
+    }
   });
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
@@ -3775,9 +3809,18 @@ class NativeAudio extends EventTarget {
       setTimeout(() => this.dispatchEvent(new Event("error")), 0);
       return;
     }
+    this.metaSent = false;
     this.poll(true);
     this.startPolling();
-    setTimeout(() => this.dispatchEvent(new Event("loadedmetadata")), 0);
+    this.poll();
+  }
+  /// Stream from the web; ready (or failed) a moment later.
+  openUrl(url, title, artist) {
+    this.error = null;
+    this.metaSent = false;
+    this.s = { loaded: false, pos: 0, dur: NaN, playing: false, ended: false, preparing: true };
+    this.bridge.audioLoadUrl(url, title || "", artist || "");
+    this.startPolling();
   }
   play() {
     this.bridge.audioPlay();
@@ -3802,6 +3845,15 @@ class NativeAudio extends EventTarget {
     const was = this.s;
     this.s = { ...next, dur: next.dur == null ? NaN : next.dur };
     if (quiet) return;
+    if (next.error && !this.error) {
+      this.error = { code: 2, message: next.error };
+      this.dispatchEvent(new Event("error"));
+      return;
+    }
+    if (!this.metaSent && next.loaded && !next.preparing) {
+      this.metaSent = true;
+      this.dispatchEvent(new Event("loadedmetadata"));
+    }
     if (next.playing && !was.playing) this.dispatchEvent(new Event("play"));
     if (!next.playing && was.playing) this.dispatchEvent(new Event(next.ended ? "ended" : "pause"));
     if (next.playing || next.pos !== was.pos) this.dispatchEvent(new Event("timeupdate"));
@@ -3809,7 +3861,7 @@ class NativeAudio extends EventTarget {
 }
 
 const nativeAudio =
-  IS_ANDROID && window.FicShelfAndroid && typeof window.FicShelfAndroid.audioLoad === "function"
+  IS_ANDROID && window.FicShelfAndroid && window.FicShelfAndroid.audioLoad
     ? new NativeAudio(window.FicShelfAndroid)
     : null;
 
@@ -3883,6 +3935,7 @@ async function openPodfic(book) {
   a.addEventListener(
     "loadedmetadata",
     () => {
+      if (listen.book?.id !== fresh.id) return; // another podfic was opened meanwhile
       // Start a few seconds back, so she hears where she left off.
       if (start > 0 && start < a.duration - 1) a.currentTime = Math.max(0, start - 3);
       a.playbackRate = Number(pref("podficSpeed", "1")) || 1;
@@ -3946,6 +3999,59 @@ async function loadPodficSource(book) {
   a.load();
 }
 
+/// Play a podfic straight from the web on the podfic screen, through the
+/// phone's own player (background, notification, lock screen).
+function streamPodfic(url, book) {
+  if (listen.book?.path === url) {
+    showListen();
+    togglePlay();
+    return;
+  }
+  savePodficPlace(true);
+  listen.audio.pause();
+  const saved = parseFloat(localStorage.getItem(`ficshelf.stream.${url}`) || "0") || 0;
+  listen.book = {
+    id: null,
+    stream: true,
+    path: url,
+    title: book?.title || "Podfic",
+    author: book?.author || "",
+    position: String(saved),
+  };
+  $("#listen-error").hidden = true;
+  $("#listen-title").textContent = listen.book.title;
+  $("#listen-author").textContent = listen.book.author;
+  $("#mini-title").textContent = listen.book.title;
+  $("#listen-art").innerHTML = "<span>🎧</span>";
+  if (book?.id && book.has_cover) {
+    invoke("book_cover", { id: book.id })
+      .then((u) => {
+        if (u && listen.book?.path === url) {
+          const img = document.createElement("img");
+          img.src = u;
+          img.alt = "";
+          $("#listen-art").replaceChildren(img);
+        }
+      })
+      .catch(() => {});
+  }
+  const a = listen.audio;
+  a.addEventListener(
+    "loadedmetadata",
+    () => {
+      if (listen.book?.path !== url) return; // another podfic was opened meanwhile
+      if (saved > 0 && saved < a.duration - 1) a.currentTime = Math.max(0, saved - 3);
+      a.playbackRate = Number(pref("podficSpeed", "1")) || 1;
+      a.play();
+      renderPodfic();
+    },
+    { once: true },
+  );
+  $("#listen-now").textContent = "Connecting…";
+  nativeAudio.openUrl(url, listen.book.title, listen.book.author);
+  showListen();
+}
+
 function showListen() {
   show("listen");
   if (!history.state?.listen) history.pushState({ listen: true }, "");
@@ -3988,6 +4094,15 @@ function savePodficPlace(force = false) {
   let pos = a.currentTime;
   if (a.ended) pos = 0; // finished: next time starts from the top
   listen.book.position = pos.toFixed(1);
+  if (listen.book.stream) {
+    // Not a library item: its place is kept by its address.
+    try {
+      localStorage.setItem(`ficshelf.stream.${listen.book.path}`, listen.book.position);
+    } catch {
+      /* storage full */
+    }
+    return;
+  }
   saveWhere(listen.book, listen.book.position);
 }
 
