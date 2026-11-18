@@ -1264,6 +1264,33 @@ fn set_library_dir(state: State<'_, AppState>, path: String) -> Result<(), Strin
     Ok(())
 }
 
+/// On a phone, where downloads go: "app" (FicShelf's private storage),
+/// "documents" or "download" (a FicShelf folder in the phone's shared
+/// Documents or Download folder, visible in the Files app). Android lets an
+/// app create and read back its own files there without any permission; a
+/// test file is written first so a refusal shows up now, not mid-download.
+#[tauri::command]
+fn set_phone_storage(app: tauri::AppHandle, state: State<'_, AppState>, choice: String) -> Result<String, String> {
+    const SHARED: &str = "/storage/emulated/0";
+    let dir = match choice.as_str() {
+        "app" => app.path().app_data_dir().map_err(err)?.join("Works"),
+        "documents" => PathBuf::from(SHARED).join("Documents").join("FicShelf"),
+        "download" => PathBuf::from(SHARED).join("Download").join("FicShelf"),
+        _ => return Err("unknown place".into()),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Android did not allow a folder there: {e}"))?;
+    let probe = dir.join(".ficshelf-write-test");
+    std::fs::write(&probe, b"ok").map_err(|e| format!("Android did not allow saving there: {e}"))?;
+    std::fs::remove_file(&probe).ok();
+    let path = dir.to_string_lossy().to_string();
+    {
+        let conn = state.conn.lock().map_err(err)?;
+        db::set_setting(&conn, "library_dir", &path).map_err(chain)?;
+    }
+    *state.library_dir.lock().map_err(err)? = dir;
+    Ok(path)
+}
+
 // -------------------------------------------------------------------- run
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1296,6 +1323,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            set_phone_storage,
             save_podfic_url,
             import_paths,
             import_bytes,

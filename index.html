@@ -229,8 +229,24 @@
             <button id="btn-change-dir">Change…</button>
           </div>
           <p class="muted">
-            Works saved from AO3 are written here as EPUB files. Books you add
-            from elsewhere are left where they are.
+            Works saved from AO3 are written here as EPUB files, and podfics
+            you save from a work go in its Podfics folder. Books you add from
+            elsewhere are left where they are.
+          </p>
+        </div>
+        <div class="setting android-only">
+          <label>Save downloads to</label>
+          <div class="tabs" role="radiogroup" id="phone-storage">
+            <button data-storage="app" role="radio">In the app</button>
+            <button data-storage="documents" role="radio">Documents</button>
+            <button data-storage="download" role="radio">Download</button>
+          </div>
+          <p class="muted">
+            Where AO3 works and saved podfics go. <strong>In the app</strong>
+            keeps them private to FicShelf (they go if FicShelf is uninstalled).
+            <strong>Documents</strong> or <strong>Download</strong> puts them in a
+            FicShelf folder there, which you can see in the Files app.
+            Downloads you already have stay where they are.
           </p>
         </div>
         <div class="setting">

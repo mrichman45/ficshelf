@@ -3323,6 +3323,22 @@ document.addEventListener("visibilitychange", () => {
 
 // ------------------------------------------------------------- settings
 
+document.querySelectorAll("[data-storage]").forEach((b) =>
+  b.addEventListener("click", async () => {
+    try {
+      await invoke("set_phone_storage", { choice: b.dataset.storage });
+      await refreshSettings();
+      toast(
+        b.dataset.storage === "app"
+          ? "New downloads will be kept inside FicShelf."
+          : `New downloads will go to ${b.textContent}/FicShelf.`,
+      );
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }),
+);
+
 $("#btn-change-dir").addEventListener("click", async () => {
   const dir = await openDialog({ directory: true });
   if (!dir) return;
@@ -3350,6 +3366,15 @@ $("#volume-paging").addEventListener("change", (e) => {
 async function refreshSettings() {
   const s = await call("get_settings");
   $("#library-dir").textContent = s.library_dir;
+  const where = /\/Documents\/FicShelf\/?$/.test(s.library_dir)
+    ? "documents"
+    : /\/Download\/FicShelf\/?$/.test(s.library_dir)
+      ? "download"
+      : "app";
+  document.querySelectorAll("[data-storage]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.storage === where);
+    b.setAttribute("aria-checked", String(b.dataset.storage === where));
+  });
   await refreshAo3Status();
 }
 
