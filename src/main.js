@@ -1655,6 +1655,7 @@ async function openEpub(book) {
   rendition.hooks.content.register((contents) => {
     applyMargins(contents);
     contents.window?.addEventListener("wheel", wheelTurn, { passive: true });
+    contents.document?.addEventListener("click", (e) => webLinkClicked(e, book), true);
   });
 
   // Hiding the toolbar, folding or unfolding, and rotating all change the
@@ -3407,6 +3408,48 @@ $("#btn-ao3-signout").addEventListener("click", async () => {
   await refreshAo3Status();
   toast(IS_ANDROID ? "Signed out." : "Signed out. The password has been removed.");
 });
+
+// ------------------------------------------------------ links in a book
+
+const AUDIO_LINK = /\.(mp3|m4a|m4b|aac|ogg|oga|opus|flac|wav)(\?|#|$)/i;
+
+/// A tap on a web link inside a book. A link straight to an audio file (a
+/// podfic's "download here") can be saved into the library; any other web
+/// link opens in the browser. Links within the book are left to epub.js.
+function webLinkClicked(e, book) {
+  const a = e.target.closest?.("a[href]");
+  if (!a) return;
+  const href = a.getAttribute("href") || "";
+  if (!/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (AUDIO_LINK.test(new URL(href).pathname)) offerPodficSave(href, book);
+  else invoke("open_link", { url: href }).catch((err) => toast(String(err), true));
+}
+
+async function offerPodficSave(url, book) {
+  const host = new URL(url).host;
+  const ok = await ask(
+    `Save this podfic to your library?\n\nIt will be downloaded from ${host} so it plays offline, with its place remembered.`,
+    { title: "Save podfic", okLabel: "Save", cancelLabel: "Open in browser" },
+  );
+  if (!ok) {
+    invoke("open_link", { url }).catch((err) => toast(String(err), true));
+    return;
+  }
+  toast(`Downloading the podfic from ${host}…`);
+  try {
+    const saved = await invoke("save_podfic_url", {
+      url,
+      title: book?.title || null,
+      author: book?.author || null,
+    });
+    toast(`Saved “${saved.title}” — it's in your library under Podfics.`);
+    refreshLibrary();
+  } catch (err) {
+    toast(`Could not save the podfic: ${err}`, true);
+  }
+}
 
 // --------------------------------------------------------------- podfic
 //

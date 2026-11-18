@@ -596,6 +596,137 @@ fn open_externally(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -
         .map_err(|e| format!("no app on this computer would open it: {e}"))
 }
 
+/// Open a web link from inside a book in the browser. Only http(s) links.
+#[tauri::command]
+fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let lower = url.trim().to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("only web links can be opened".into());
+    }
+    app.opener()
+        .open_url(url.trim(), None::<&str>)
+        .map_err(|e| format!("could not open the link: {e}"))
+}
+
+/// Largest podfic fetched from a link.
+const MAX_PODFIC_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Download a podfic's audio from a link in a work (the podficcer's own
+/// "download here" link) into the library. One file, fetched once, when she
+/// asks for it; nothing else on that site is touched.
+#[tauri::command]
+async fn save_podfic_url(
+    state: State<'_, AppState>,
+    url: String,
+    title: Option<String>,
+    author: Option<String>,
+) -> Result<db::Book, String> {
+    use std::io::Write;
+
+    let url = url.trim().to_string();
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("that is not a web link".into());
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!(
+            "FicShelf/",
+            env!("CARGO_PKG_VERSION"),
+            " (podfic download; https://github.com/mrichman45/ficshelf)"
+        ))
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(err)?;
+    let mut resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach that site: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("the site answered {} for that link", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_PODFIC_BYTES) {
+        return Err("that file is over 2 GB, too large to save".into());
+    }
+    let name = resp
+        .url()
+        .path_segments()
+        .and_then(|mut s| s.next_back().map(util::percent_decode))
+        .filter(|n| !n.is_empty());
+
+    let dir = { state.library_dir.lock().map_err(err)?.join("Podfics") };
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let tmp = dir.join(format!(".downloading-{}-{}.part", std::process::id(), db::now()));
+    let mut out = std::fs::File::create(&tmp).map_err(err)?;
+    let mut head: Vec<u8> = Vec::with_capacity(256);
+    let mut size: u64 = 0;
+    let result: Result<(), String> = async {
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("the download stopped: {e}"))? {
+            if head.len() < 256 {
+                let take = (256 - head.len()).min(chunk.len());
+                head.extend_from_slice(&chunk[..take]);
+                // A web page instead of audio: stop early.
+                if head.len() >= 16 && util::sniff_format(&head, name.as_deref().unwrap_or("")).is_none() {
+                    return Err("that link leads to a web page, not an audio file; open it in the browser instead"
+                        .into());
+                }
+            }
+            size += chunk.len() as u64;
+            if size > MAX_PODFIC_BYTES {
+                return Err("that file is over 2 GB, too large to save".into());
+            }
+            out.write_all(&chunk).map_err(err)?;
+        }
+        out.flush().map_err(err)?;
+        Ok(())
+    }
+    .await;
+    drop(out);
+    if let Err(e) = result {
+        std::fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
+    let format = match util::sniff_format(&head, name.as_deref().unwrap_or("")) {
+        Some(f) if util::kind_of_ext(f) == Some("audio") => f,
+        _ => {
+            std::fs::remove_file(&tmp).ok();
+            return Err("that link is not an audio file".into());
+        }
+    };
+
+    let title = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let stem = title
+        .clone()
+        .or_else(|| name.as_deref().and_then(|n| n.rsplit_once('.').map(|(s, _)| s.to_string())))
+        .unwrap_or_else(|| format!("Podfic {}", db::now()));
+    let path = import_destination(&dir, &util::safe_filename(&stem, "Podfic"), format, size);
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        std::fs::remove_file(&tmp).ok();
+        err(e)
+    })?;
+
+    let conn = state.conn.lock().map_err(err)?;
+    let book = import_one(&conn, &path, Some("Podfics")).map_err(|e| {
+        std::fs::remove_file(&path).ok();
+        chain(e)
+    })?;
+    // Files from podfic hosts are often tagged badly or not at all: the
+    // work's own title and creator are better than a file name.
+    let untagged = book.author.is_none() || Some(&book.title) == path.file_stem().map(|s| s.to_string_lossy().into_owned()).as_ref();
+    if untagged {
+        if let Some(t) = &title {
+            let by = book.author.clone().or(author.filter(|a| !a.trim().is_empty()));
+            db::update_metadata(&conn, book.id, t, by.as_deref(), book.series.as_deref(), book.series_index)
+                .map_err(chain)?;
+            return db::get_book(&conn, book.id)
+                .map_err(chain)?
+                .ok_or_else(|| "the podfic vanished from the library".to_string());
+        }
+    }
+    Ok(book)
+}
+
 /// Open a word's dictionary entry (Wiktionary) in the browser. The URL is
 /// built here, so the front end cannot ask for anything but a dictionary
 /// page.
@@ -1164,6 +1295,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_books,
+            open_link,
+            save_podfic_url,
             import_paths,
             import_bytes,
             import_uri,
