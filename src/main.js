@@ -660,11 +660,27 @@ function seriesCard(name, books) {
   count.className = "count";
   count.textContent = String(books.length);
   card.appendChild(count);
+  let pressedLong = false;
   card.addEventListener("click", () => {
+    if (pressedLong) {
+      pressedLong = false;
+      return;
+    }
     state.openSeries = name;
     renderShelf();
     $("#view-library").scrollTop = 0;
   });
+  if (IS_ANDROID) {
+    onLongPress(card, () => {
+      pressedLong = true;
+      openSeriesRename(name);
+    });
+  } else {
+    card.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openSeriesRename(name);
+    });
+  }
   return card;
 }
 
@@ -1125,13 +1141,51 @@ async function applyLookup(c, { details, cover }) {
   }
 }
 
+// -------------------------------------------------------- rename series
+
+let renamingSeries = null;
+
+function openSeriesRename(name) {
+  const books = state.books.filter((b) => groupOf(b) === name);
+  if (!books.length) return;
+  renamingSeries = { name, ids: books.map((b) => b.id) };
+  $("#series-dialog-count").textContent = `“${name}” · ${books.length} book${books.length === 1 ? "" : "s"}`;
+  $("#series-new-name").value = name === OTHER ? "" : name;
+  $("#series-dialog").showModal();
+  $("#series-new-name").select();
+}
+
+$("#btn-series-rename").addEventListener("click", () => state.openSeries && openSeriesRename(state.openSeries));
+$("#series-cancel").addEventListener("click", () => $("#series-dialog").close());
+$("#series-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const r = renamingSeries;
+  const name = $("#series-new-name").value.trim();
+  if (!r || !name) return;
+  try {
+    await call("bulk_edit", { ids: r.ids, change: { series: name } });
+  } catch {
+    return; // the toast says why
+  }
+  $("#series-dialog").close();
+  if (state.openSeries === r.name) state.openSeries = name;
+  await refreshLibrary();
+  toast(`Renamed to “${name}”.`);
+});
+
 // ----------------------------------------------------------- duplicates
 
-$("#lib-duplicates").addEventListener("click", async () => {
+$("#lib-duplicates").addEventListener("click", () => {
   $("#lib-menu").close();
+  $("#dupes-dialog").showModal();
+  scanDupes();
+});
+$("#dupes-refresh").addEventListener("click", scanDupes);
+
+async function scanDupes() {
   $("#dupes-list").textContent = "";
   $("#dupes-status").textContent = "Looking…";
-  $("#dupes-dialog").showModal();
+  $("#dupes-refresh").disabled = true;
   let groups = [];
   try {
     groups = await invoke("find_duplicates");
@@ -1139,9 +1193,11 @@ $("#lib-duplicates").addEventListener("click", async () => {
     $("#dupes-status").textContent = `Could not look: ${e}`;
     logError("find duplicates", e);
     return;
+  } finally {
+    $("#dupes-refresh").disabled = false;
   }
   renderDupes(groups);
-});
+}
 $("#dupes-close").addEventListener("click", () => $("#dupes-dialog").close());
 
 function renderDupes(groups) {

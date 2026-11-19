@@ -509,7 +509,7 @@ body.reading #nav { display: none; }
 /* -------------------------------------------------------------- series */
 
 .series-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.series-head h2 { margin: 0; font-size: 18px; font-family: var(--serif); }
+.series-head h2 { margin: 0; font-size: 18px; font-family: var(--serif); flex: 1; min-width: 0; }
 .card .count {
   position: absolute;
   bottom: 54px;

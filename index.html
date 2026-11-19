@@ -61,6 +61,7 @@
         <div id="series-head" class="series-head" hidden>
           <button id="btn-series-back">← All series</button>
           <h2 id="series-name"></h2>
+          <button id="btn-series-rename">Rename series</button>
         </div>
         <div id="shelf" class="shelf"></div>
         <p id="library-empty" class="empty" hidden>
@@ -608,6 +609,19 @@
       </form>
     </dialog>
 
+    <dialog id="series-dialog" class="sheet">
+      <form id="series-form" method="dialog">
+        <h3>Rename series</h3>
+        <p id="series-dialog-count" class="muted small"></p>
+        <label>New name <input id="series-new-name" type="text" list="series-names" required /></label>
+        <p class="muted small">Every book in it takes the new name and keeps its number. Using the name of another series merges the two.</p>
+        <div class="row">
+          <button type="button" id="series-cancel">Cancel</button>
+          <button type="submit" class="primary">Rename</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="lookup-dialog" class="sheet tall">
       <h3>Find details online</h3>
       <form id="lookup-form" class="lookup-form">
@@ -625,7 +639,10 @@
       <h3>Duplicates</h3>
       <p id="dupes-status" class="muted small"></p>
       <div id="dupes-list"></div>
-      <div class="row"><button id="dupes-close" class="primary">Done</button></div>
+      <div class="row">
+        <button id="dupes-refresh">Look again</button>
+        <button id="dupes-close" class="primary">Done</button>
+      </div>
     </dialog>
 
     <dialog id="edit-dialog" class="sheet">

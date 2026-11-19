@@ -2,6 +2,11 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.3
+
+- **Rename a series** in one go: open it and tap Rename series, or long-press its cover in the Series view. Every book keeps its number; a name already in use merges the two.
+- **Look again** in Find duplicates, to scan once more after merging.
+
 ## 1.1.2
 
 - Fixes 1.1.0 and 1.1.1 closing straight away on Android phones.
