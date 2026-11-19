@@ -201,7 +201,7 @@ pub fn make(
             return Err(e);
         }
     };
-    std::fs::rename(&tmp, dest).with_context(|| format!("saving {}", dest.display()))?;
+    crate::util::place_file(&tmp, dest).with_context(|| format!("saving {}", dest.display()))?;
     let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     Ok(Made { path: dest.to_string_lossy().into_owned(), bytes, books: count })
 }
@@ -290,7 +290,7 @@ pub fn restore(
             progress(done, total);
         }
         drop(out);
-        std::fs::rename(&part, &target)?;
+        crate::util::place_file(&part, &target)?;
         files += 1;
     }
 

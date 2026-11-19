@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.5
+
+- Fixes backups (and AO3 saves, podfic downloads and conversions) failing with "Operation not permitted" in Android's Download and Documents folders, and tidies up the unfinished files they left.
+
 ## 1.1.4
 
 - **Check for app updates** in the Library ⋯ menu (it is also under Settings → About FicShelf).

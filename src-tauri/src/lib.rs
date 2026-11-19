@@ -551,7 +551,7 @@ async fn import_uri(
         .and_then(|n| n.rsplit_once('.').map(|(s, _)| s.to_string()))
         .unwrap_or_else(|| format!("Imported {}", db::now()));
     let path = import_destination(&dir, &util::safe_filename(&stem, "Imported"), format, size);
-    std::fs::rename(&tmp, &path).map_err(|e| {
+    util::place_file(&tmp, &path).map_err(|e| {
         std::fs::remove_file(&tmp).ok();
         err(e)
     })?;
@@ -1278,7 +1278,7 @@ async fn save_podfic_url(
         .or_else(|| name.as_deref().and_then(|n| n.rsplit_once('.').map(|(s, _)| s.to_string())))
         .unwrap_or_else(|| format!("Podfic {}", db::now()));
     let path = import_destination(&dir, &util::safe_filename(&stem, "Podfic"), format, size);
-    std::fs::rename(&tmp, &path).map_err(|e| {
+    util::place_file(&tmp, &path).map_err(|e| {
         std::fs::remove_file(&tmp).ok();
         err(e)
     })?;
@@ -1805,7 +1805,7 @@ async fn ao3_save_work(state: State<'_, AppState>, work_id: i64) -> Result<db::B
     // never leaves a half-written book in place of the old copy.
     let part = dir.join(format!(".{work_id}.epub.part"));
     std::fs::write(&part, &bytes).map_err(err)?;
-    std::fs::rename(&part, &path).map_err(|e| {
+    util::place_file(&part, &path).map_err(|e| {
         std::fs::remove_file(&part).ok();
         err(e)
     })?;
@@ -2155,6 +2155,15 @@ async fn backup_auto(app: tauri::AppHandle, prefs: serde_json::Value) -> Result<
         .cloned()
         .unwrap_or_else(|| data_dir.join("Backups"));
     std::fs::remove_file(usable.join(".ficshelf-test")).ok();
+    // Left behind by a backup that could not finish (1.1.2 and earlier, on
+    // Android's Download folder).
+    if let Ok(entries) = std::fs::read_dir(&usable) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".zip.part") {
+                std::fs::remove_file(e.path()).ok();
+            }
+        }
+    }
 
     if db::now() - last < AUTO_BACKUP_EVERY {
         return Ok(AutoBackup { last, dir: usable.to_string_lossy().into_owned(), made: false });

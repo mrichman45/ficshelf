@@ -216,6 +216,23 @@ pub fn sniff_format(bytes: &[u8], name_hint: &str) -> Option<&'static str> {
     None
 }
 
+/// Move a finished temporary file into place. Android's shared folders
+/// (Download, Documents) can refuse a rename with "Operation not
+/// permitted"; then the file is copied into place and the temporary one
+/// removed, which they allow.
+pub fn place_file(tmp: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(first) => match std::fs::copy(tmp, dest) {
+            Ok(_) => {
+                std::fs::remove_file(tmp).ok();
+                Ok(())
+            }
+            Err(_) => Err(first),
+        },
+    }
+}
+
 /// Whether version `a` ("1.0.1", "v1.2.0") is newer than `b`. Missing
 /// parts count as 0; anything after a "-" (pre-releases) is ignored.
 pub fn version_newer(a: &str, b: &str) -> bool {
@@ -521,5 +538,16 @@ mod audio_sniff_tests {
         assert_eq!(sniff_format(&mobi, "book.mobi"), Some("mobi"));
         assert_eq!(kind_of_ext("CBR"), Some("cbz"));
         assert_eq!(kind_of_ext("azw3"), Some("mobi"));
+    }
+
+    #[test]
+    fn places_files() {
+        let dir = std::env::temp_dir().join(format!("ficshelf-place-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.part"), dir.join("a.zip"));
+        std::fs::write(&a, b"x").unwrap();
+        place_file(&a, &b).unwrap();
+        assert!(!a.exists() && std::fs::read(&b).unwrap() == b"x");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

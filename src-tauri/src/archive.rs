@@ -284,7 +284,7 @@ pub fn write_cbz(path: &Path, dest: &Path) -> Result<()> {
         std::fs::remove_file(&tmp).ok();
         return Err(e);
     }
-    std::fs::rename(&tmp, dest)?;
+    crate::util::place_file(&tmp, dest)?;
     Ok(())
 }
 
