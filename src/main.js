@@ -940,6 +940,23 @@ $("#lib-search-help").addEventListener("click", () => {
   $("#search-help").showModal();
 });
 $("#search-help-close").addEventListener("click", () => $("#search-help").close());
+$("#lib-app-update").addEventListener("click", async () => {
+  $("#lib-menu").close();
+  toast("Checking for a new version…");
+  try {
+    const u = await invoke("check_app_update");
+    if (!u.newer) {
+      toast(`You have the newest version (${u.current}).`);
+      return;
+    }
+    // Show the usual banner, even if "Later" was chosen for this version.
+    setPref("updateDismissed", "");
+    await checkForNewVersion({ quiet: true });
+    toast(`FicShelf ${u.latest} is available — see the banner at the top.`);
+  } catch (e) {
+    toast(`Could not check: ${e}`, true);
+  }
+});
 
 // ----------------------------------------------------------- selecting
 

@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.4
+
+- **Check for app updates** in the Library ⋯ menu (it is also under Settings → About FicShelf).
+
 ## 1.1.3
 
 - **Rename a series** in one go: open it and tap Rename series, or long-press its cover in the Series view. Every book keeps its number; a name already in use merges the two.
