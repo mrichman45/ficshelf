@@ -81,6 +81,11 @@ jobs:
 
       - run: npm install
 
+      # Every icon size for every platform comes from icons/icon.png, so
+      # replacing that one file changes the icon everywhere.
+      - name: Icons
+        run: npm run tauri icon -- src-tauri/icons/icon.png
+
       - name: Build
         uses: tauri-apps/tauri-action@v0
         # Google Drive sync: the OAuth client FicShelf identifies itself as.
@@ -162,6 +167,13 @@ jobs:
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           npm run tauri android init -- --ci
+          # The launcher icon: without this the APK carries Tauri's default
+          # logo. `tauri icon` writes every Android size (and the round and
+          # adaptive variants) into the project just generated. Android crops
+          # icons to the phone's own shape, so it gets an edge-to-edge
+          # version of the shelf (android-icon.png) rather than the rounded
+          # desktop one.
+          npm run tauri icon -- src-tauri/icons/android-icon.png
           python3 scripts/patch-android.py
           npm run tauri android build -- --apk --target aarch64 --ci
 

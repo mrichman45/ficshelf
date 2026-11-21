@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.6
+
+- **The bookshelf icon on Android.** Phones showed Tauri's default logo; now they show FicShelf's own, shaped to fit the phone's icon style.
+
 ## 1.1.5
 
 - Fixes backups (and AO3 saves, podfic downloads and conversions) failing with "Operation not permitted" in Android's Download and Documents folders, and tidies up the unfinished files they left.
