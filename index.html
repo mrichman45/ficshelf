@@ -17,6 +17,7 @@
         <button data-view="search">Search AO3</button>
         <button data-view="history">History</button>
         <button data-view="bookmarks">Bookmarks</button>
+        <button data-view="servers">Servers</button>
         <button data-view="updates">Updates <span id="update-badge" hidden>0</span></button>
         <button data-view="settings">Settings</button>
       </div>
@@ -69,6 +70,7 @@
           <button id="btn-series-back">← All series</button>
           <h2 id="series-name"></h2>
           <button id="btn-series-rename">Rename series</button>
+          <button id="btn-series-track">Track</button>
         </div>
         <div id="shelf" class="shelf"></div>
         <p id="library-empty" class="empty" hidden>
@@ -131,6 +133,10 @@
               <img class="pg" alt="" hidden />
             </div>
           </div>
+          <!-- Comics as one long strip (webtoons): pages stacked, scrolled. -->
+          <div id="cbz-strip" hidden></div>
+          <!-- Dims the page for the Brightness setting (all formats). -->
+          <div id="reader-dim" aria-hidden="true"></div>
           <p id="reader-error" class="error" hidden></p>
         </div>
         <!-- Page number for PDFs and comics, kept visible when the toolbar
@@ -274,6 +280,48 @@
         </div>
       </section>
 
+      <section id="view-servers" class="view">
+        <div id="servers-home">
+          <header class="bar"><h2 class="bar-title">Book servers</h2></header>
+          <p class="muted">
+            Browse and download from your own book server, or a friend's:
+            Komga, Kavita, Calibre-Web, Calibre's content server, or anything
+            else that offers an OPDS catalogue.
+          </p>
+          <div id="servers-list" class="servers-list"></div>
+          <details class="server-add" id="server-add">
+            <summary>Add a server</summary>
+            <form id="server-form">
+              <label>Name <input id="srv-name" type="text" placeholder="e.g. Home Komga" /></label>
+              <label>OPDS address <input id="srv-url" type="url" required placeholder="http://192.168.1.20:25600/opds/v1.2/catalog" /></label>
+              <label>Username <input id="srv-user" type="text" autocomplete="off" /></label>
+              <label>Password <input id="srv-pass" type="password" autocomplete="off" /></label>
+              <p class="muted small">
+                Komga: <code>http://address:25600/opds/v1.2/catalog</code> ·
+                Kavita: <code>http://address:5000/api/opds/</code> + your OPDS key (no username needed) ·
+                Calibre-Web: <code>http://address:8083/opds</code>
+              </p>
+              <div class="row"><button type="submit" class="primary">Add server</button></div>
+              <p id="srv-status" class="muted small"></p>
+            </form>
+          </details>
+        </div>
+        <div id="servers-browse" hidden>
+          <header class="bar">
+            <button id="opds-back" class="icon" title="Back">←</button>
+            <h2 id="opds-title" class="bar-title"></h2>
+          </header>
+          <form id="opds-search" class="lookup-form" hidden>
+            <input id="opds-query" type="search" placeholder="Search this server…" />
+            <button type="submit">Search</button>
+          </form>
+          <div id="opds-busy" class="busy" hidden><div class="busy-track"><div class="busy-fill"></div></div></div>
+          <p id="opds-status" class="muted small"></p>
+          <div id="opds-entries" class="opds-entries"></div>
+          <div class="row"><button id="opds-more" hidden>Load more</button></div>
+        </div>
+      </section>
+
       <section id="view-settings" class="view">
         <h2>Settings</h2>
         <div class="setting desktop-only">
@@ -302,6 +350,15 @@
             FicShelf folder there, which you can see in the Files app.
             Downloads you already have stay where they are.
           </p>
+        </div>
+        <div class="setting">
+          <h3>AniList and MyAnimeList</h3>
+          <p class="muted small">
+            Link a series to its entry (the <strong>Track</strong> button on a series)
+            and FicShelf updates your list as you finish volumes: volumes read,
+            reading or completed, and your star rating as the score.
+          </p>
+          <div id="tracker-accounts" class="tracker-accounts"></div>
         </div>
         <div class="setting">
           <h3>Appearance</h3>
@@ -648,6 +705,32 @@
       </form>
     </dialog>
 
+    <dialog id="signin-dialog" class="sheet">
+      <form id="signin-form" method="dialog">
+        <h3 id="signin-title">Sign in</h3>
+        <p id="signin-help" class="small"></p>
+        <textarea id="signin-paste" rows="3" required placeholder="Paste here"></textarea>
+        <p id="signin-status" class="muted small"></p>
+        <div class="row">
+          <button type="button" id="signin-cancel">Cancel</button>
+          <button type="submit" class="primary">Sign in</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="track-dialog" class="sheet">
+      <h3>Track <span id="track-series"></span></h3>
+      <div class="tabs" id="track-service" role="radiogroup"></div>
+      <div id="track-linked" class="muted small"></div>
+      <form id="track-search" class="lookup-form">
+        <input id="track-query" type="search" />
+        <button type="submit">Search</button>
+      </form>
+      <p id="track-status" class="muted small"></p>
+      <div id="track-results" class="opds-entries"></div>
+      <div class="row"><button type="button" id="track-close">Done</button></div>
+    </dialog>
+
     <dialog id="series-dialog" class="sheet">
       <form id="series-form" method="dialog">
         <h3>Rename series</h3>
@@ -778,6 +861,7 @@
       <button id="reader-aa">Aa  Text size, font and margins</button>
       <button id="reader-notes">🔖  Bookmarks and notes</button>
       <button id="reader-comic">⚙  Reading direction and pages</button>
+      <button id="reader-display">☀  Brightness, colour and auto-scroll</button>
       <button id="more-settings">Appearance and page turns…</button>
       <button id="more-close">Close</button>
     </dialog>
@@ -809,6 +893,11 @@
         <button data-dir="ltr" role="radio">Left to right</button>
         <button data-dir="rtl" role="radio">Right to left (manga)</button>
       </div>
+      <p class="muted small sheet-label">Reading mode (this comic)</p>
+      <div class="tabs" role="radiogroup" id="comic-mode">
+        <button data-mode="pages" role="radio">Pages</button>
+        <button data-mode="strip" role="radio">Long strip (webtoon)</button>
+      </div>
       <p class="muted small sheet-label">Pages (all comics)</p>
       <div class="tabs" role="radiogroup" id="comic-layout">
         <button data-layout="auto" role="radio">Auto</button>
@@ -820,6 +909,22 @@
         tall. Pinch or double-tap the middle of a page to zoom.
       </p>
       <div class="row"><button id="comic-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="display-sheet" class="sheet">
+      <h3>Display</h3>
+      <label class="slider-row">Brightness <input id="disp-bright" type="range" min="25" max="100" step="5" /></label>
+      <label class="slider-row">Warmth <input id="disp-warm" type="range" min="0" max="60" step="5" /></label>
+      <label class="check"><input id="disp-gray" type="checkbox" /> Black and white</label>
+      <label class="check"><input id="disp-crop" type="checkbox" /> Crop white borders on comic pages</label>
+      <label class="check"><input id="disp-awake" type="checkbox" /> Keep the screen on while reading</label>
+      <p class="muted small sheet-label">Auto-scroll</p>
+      <label class="slider-row"><span id="disp-speed-label">Speed</span> <input id="disp-speed" type="range" min="1" max="10" step="1" /></label>
+      <p class="muted small">Long strips and scrolled books glide down; pages turn by themselves. Tap anywhere to stop.</p>
+      <div class="row">
+        <button id="disp-auto">Start auto-scroll</button>
+        <button id="disp-done" class="primary">Done</button>
+      </div>
     </dialog>
 
     <dialog id="notes-sheet" class="sheet">

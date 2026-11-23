@@ -92,6 +92,8 @@ jobs:
         # Without these the app builds fine, with sync shown as not set up.
         env:
           FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
+          FICSHELF_ANILIST_CLIENT_ID: ${{ secrets.FICSHELF_ANILIST_CLIENT_ID }}
+          FICSHELF_MAL_CLIENT_ID: ${{ secrets.FICSHELF_MAL_CLIENT_ID }}
           FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
           FICSHELF_REPORT_EMAIL: ${{ secrets.FICSHELF_REPORT_EMAIL }}
         with:
@@ -162,6 +164,8 @@ jobs:
       - name: Build
         env:
           FICSHELF_GOOGLE_CLIENT_ID: ${{ secrets.FICSHELF_GOOGLE_CLIENT_ID }}
+          FICSHELF_ANILIST_CLIENT_ID: ${{ secrets.FICSHELF_ANILIST_CLIENT_ID }}
+          FICSHELF_MAL_CLIENT_ID: ${{ secrets.FICSHELF_MAL_CLIENT_ID }}
           FICSHELF_GOOGLE_CLIENT_SECRET: ${{ secrets.FICSHELF_GOOGLE_CLIENT_SECRET }}
           FICSHELF_REPORT_EMAIL: ${{ secrets.FICSHELF_REPORT_EMAIL }}
         run: |

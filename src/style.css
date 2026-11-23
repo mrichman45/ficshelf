@@ -1350,3 +1350,46 @@ input.narrow { width: 5em; display: inline-block; }
 .stat-bar { flex: 1 1 0; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 1px; opacity: 0.85; }
 .stats-top { padding-left: 1.3em; line-height: 1.8; }
 .shelves-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+
+/* ----------------------------------------------------- long strip, display */
+
+#cbz-strip {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #000;
+}
+#cbz-strip[hidden] { display: none; }
+.strip-page { min-height: 70vh; display: flex; justify-content: center; }
+.strip-page.ready { min-height: 0; }
+.strip-page img { display: block; width: 100%; max-width: 900px; height: auto; }
+
+#reader-dim {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.slider-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin: 6px 0; }
+.slider-row input[type="range"] { flex: 1 1 auto; accent-color: var(--accent); }
+
+/* ------------------------------------------------------------- servers */
+
+.bar-title { margin: 0; font-size: 18px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.servers-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.server-row { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; background: var(--panel); }
+.server-open { flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; background: none; border: none; text-align: left; padding: 8px 4px; color: var(--ink); min-width: 0; }
+.server-open span { overflow-wrap: anywhere; }
+.server-add { margin-top: 10px; }
+.server-add summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.server-add form { display: flex; flex-direction: column; gap: 8px; }
+.opds-entries { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; }
+
+.tracker-accounts { display: flex; flex-direction: column; gap: 6px; }
+#signin-paste { width: 100%; font: inherit; box-sizing: border-box; }
+#track-dialog .tabs { margin: 6px 0; }

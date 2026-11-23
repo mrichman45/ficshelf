@@ -15,6 +15,8 @@ mod thumb;
 mod lookup;
 mod convert;
 mod share;
+mod opds;
+mod trackers;
 mod mobi;
 mod creds;
 mod db;
@@ -946,6 +948,368 @@ async fn apply_lookup(
         db::set_cover(&conn, id, &bytes, &mime).map_err(chain)?;
     }
     db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
+}
+
+// ------------------------------------------------------- OPDS servers
+
+/// The keyring entry for a server's password (computers only).
+fn opds_key(id: i64, username: &str) -> String {
+    format!("opds:{id}:{username}")
+}
+
+fn opds_server(state: &AppState, id: i64) -> Result<(db::OpdsServer, Option<String>), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let server = db::opds_servers(&conn)
+        .map_err(chain)?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or("that server is not set up any more")?;
+    let password = match server.username.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) if creds::SUPPORTED => creds::load(&opds_key(id, u)).ok().flatten(),
+        Some(_) => server.password.clone(),
+        None => None,
+    };
+    Ok((server, password))
+}
+
+#[tauri::command]
+fn opds_servers(state: State<'_, AppState>) -> Result<Vec<db::OpdsServer>, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::opds_servers(&conn).map_err(chain)
+}
+
+/// Add a server after checking it answers with a catalogue.
+#[tauri::command]
+async fn opds_add(
+    state: State<'_, AppState>,
+    name: String,
+    url: String,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<db::OpdsServer, String> {
+    let url = url.trim().to_string();
+    let url = if url.starts_with("http://") || url.starts_with("https://") { url } else { format!("http://{url}") };
+    let user = username.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    let pass = password.filter(|p| !p.is_empty());
+    let probe = opds::Server { url: &url, username: user.as_deref(), password: pass.as_deref() };
+    let feed = opds::feed(&probe, &url).await.map_err(chain)?;
+    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| {
+        if feed.title.is_empty() { url.clone() } else { feed.title.clone() }
+    });
+    let conn = state.conn.lock().map_err(err)?;
+    let keep_here = if creds::SUPPORTED { None } else { pass.as_deref() };
+    let id = db::add_opds_server(&conn, &name, &url, user.as_deref(), keep_here).map_err(chain)?;
+    if let (Some(u), Some(p)) = (user.as_deref(), pass.as_deref()) {
+        if creds::SUPPORTED {
+            creds::store(&opds_key(id, u), p).map_err(chain)?;
+        }
+    }
+    Ok(db::OpdsServer { id, name, url, username: user, password: None })
+}
+
+#[tauri::command]
+fn opds_remove(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    if let Some(s) = db::opds_servers(&conn).map_err(chain)?.into_iter().find(|s| s.id == id) {
+        if let Some(u) = s.username.as_deref().filter(|u| !u.is_empty()) {
+            if creds::SUPPORTED {
+                creds::forget(&opds_key(id, u)).ok();
+            }
+        }
+    }
+    db::remove_opds_server(&conn, id).map_err(chain)
+}
+
+/// A page of a server's catalogue (its start page when no URL is given),
+/// or search results when a query is given.
+#[tauri::command]
+async fn opds_browse(
+    state: State<'_, AppState>,
+    id: i64,
+    url: Option<String>,
+    search: Option<String>,
+    query: Option<String>,
+) -> Result<opds::Feed, String> {
+    let (server, password) = opds_server(&state, id)?;
+    let s = opds::Server { url: &server.url, username: server.username.as_deref(), password: password.as_deref() };
+    match (search, query.filter(|q| !q.trim().is_empty())) {
+        (Some(search), Some(q)) => opds::search(&s, &search, &q).await.map_err(chain),
+        _ => opds::feed(&s, url.as_deref().unwrap_or(&server.url)).await.map_err(chain),
+    }
+}
+
+/// A cover from the server (they usually need the login too).
+#[tauri::command]
+async fn opds_image(state: State<'_, AppState>, id: i64, url: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let (server, password) = opds_server(&state, id)?;
+    let s = opds::Server { url: &server.url, username: server.username.as_deref(), password: password.as_deref() };
+    let Ok(resp) = opds::get(&s, &url).await else { return Ok(None) };
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(err)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Ok(None);
+    }
+    let (bytes, mime) = thumb::shrink(bytes.to_vec(), mime);
+    Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
+}
+
+/// Download a book from a server into the library, under a folder named
+/// after the server in the downloads folder.
+#[tauri::command]
+async fn opds_download(
+    state: State<'_, AppState>,
+    id: i64,
+    url: String,
+    title: String,
+) -> Result<db::Book, String> {
+    use std::io::Write;
+    let (server, password) = opds_server(&state, id)?;
+    let s = opds::Server { url: &server.url, username: server.username.as_deref(), password: password.as_deref() };
+    let mut resp = opds::get(&s, &url).await.map_err(chain)?;
+    let name_hint = resp
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split("filename=").nth(1))
+        .map(|f| f.trim_matches(|c| c == '"' || c == '\'' || c == ';').to_string())
+        .or_else(|| resp.url().path_segments().and_then(|mut p| p.next_back().map(util::percent_decode)))
+        .unwrap_or_default();
+    let dir = { state.library_dir.lock().map_err(err)?.join(util::safe_filename(&server.name, "Server")) };
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let tmp = dir.join(format!(".download-{}.part", db::now()));
+    let mut out = std::fs::File::create(&tmp).map_err(err)?;
+    let mut head: Vec<u8> = Vec::new();
+    let mut size: u64 = 0;
+    let result: Result<(), String> = async {
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("the download stopped: {e}"))? {
+            if head.len() < 4096 {
+                head.extend_from_slice(&chunk[..chunk.len().min(4096 - head.len())]);
+            }
+            size += chunk.len() as u64;
+            if size > 4 * 1024 * 1024 * 1024 {
+                return Err("that file is over 4 GB".into());
+            }
+            out.write_all(&chunk).map_err(err)?;
+        }
+        out.flush().map_err(err)
+    }
+    .await;
+    drop(out);
+    if let Err(e) = result {
+        std::fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
+    let Some(ext) = util::sniff_format(&head, &name_hint) else {
+        std::fs::remove_file(&tmp).ok();
+        return Err("the server sent a file FicShelf cannot read".into());
+    };
+    let stem = Some(title.trim()).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| "Book".into());
+    let path = import_destination(&dir, &util::safe_filename(&stem, "Book"), ext, size);
+    util::place_file(&tmp, &path).map_err(|e| {
+        std::fs::remove_file(&tmp).ok();
+        err(e)
+    })?;
+    let conn = state.conn.lock().map_err(err)?;
+    import_one(&conn, &path, Some(&server.name)).map_err(chain)
+}
+
+// ------------------------------------------------- AniList / MyAnimeList
+
+/// The MyAnimeList sign-in in progress: its PKCE verifier.
+static MAL_VERIFIER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn tracker_secret_key(service: &str, which: &str) -> String {
+    format!("tracker:{service}:{which}")
+}
+
+fn save_tracker(conn: &rusqlite::Connection, service: &str, name: &str, t: &trackers::Tokens) -> Result<(), String> {
+    let (access, refresh) = if creds::SUPPORTED {
+        creds::store(&tracker_secret_key(service, "access"), &t.access).map_err(chain)?;
+        if let Some(r) = &t.refresh {
+            creds::store(&tracker_secret_key(service, "refresh"), r).map_err(chain)?;
+        }
+        (None, None)
+    } else {
+        (Some(t.access.clone()), t.refresh.clone())
+    };
+    db::set_tracker_account(conn, service, &db::TrackerAccount { name: name.to_string(), access, refresh, expires: t.expires })
+        .map_err(chain)
+}
+
+/// A working token for the service, refreshing MyAnimeList's when it has run out.
+async fn tracker_token(state: &AppState, service: &str) -> Result<String, String> {
+    let account = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::tracker_account(&conn, service).map_err(chain)?
+    }
+    .ok_or("not signed in")?;
+    let secret = |which: &str, here: &Option<String>| {
+        if creds::SUPPORTED {
+            creds::load(&tracker_secret_key(service, which)).ok().flatten()
+        } else {
+            here.clone()
+        }
+    };
+    let access = secret("access", &account.access).ok_or("sign in again")?;
+    if account.expires > db::now() {
+        return Ok(access);
+    }
+    let refresh = secret("refresh", &account.refresh).ok_or("the sign-in has run out; sign in again")?;
+    let t = trackers::mal_refresh(&refresh).await.map_err(|e| format!("the sign-in has run out; sign in again ({e})"))?;
+    let conn = state.conn.lock().map_err(err)?;
+    save_tracker(&conn, service, &account.name, &t)?;
+    Ok(t.access)
+}
+
+#[derive(Serialize)]
+struct TrackerState {
+    service: &'static str,
+    available: bool,
+    account: Option<String>,
+}
+
+#[tauri::command]
+fn trackers_status(state: State<'_, AppState>) -> Result<(Vec<TrackerState>, Vec<db::TrackerLink>), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let mut out = Vec::new();
+    for service in ["anilist", "mal"] {
+        out.push(TrackerState {
+            service,
+            available: trackers::available(service),
+            account: db::tracker_account(&conn, service).map_err(chain)?.map(|a| a.name),
+        });
+    }
+    Ok((out, db::tracker_links(&conn).map_err(chain)?))
+}
+
+/// Where to send her to sign in.
+#[tauri::command]
+fn tracker_signin_url(service: String) -> Result<String, String> {
+    match service.as_str() {
+        "anilist" => trackers::anilist_auth_url().ok_or_else(|| "AniList is not set up in this build".into()),
+        "mal" => {
+            let v = trackers::new_verifier();
+            let url = trackers::mal_auth_url(&v).ok_or("MyAnimeList is not set up in this build")?;
+            *MAL_VERIFIER.lock().map_err(err)? = Some(v);
+            Ok(url)
+        }
+        _ => Err("unknown service".into()),
+    }
+}
+
+/// Finish signing in with what she copied back: AniList's token, or the
+/// address MyAnimeList sent her to.
+#[tauri::command]
+async fn tracker_finish_signin(state: State<'_, AppState>, service: String, pasted: String) -> Result<String, String> {
+    let tokens = match service.as_str() {
+        "anilist" => {
+            let p = pasted.trim();
+            let token = p
+                .split("access_token=")
+                .nth(1)
+                .map(|t| t.split('&').next().unwrap_or(t))
+                .unwrap_or(p)
+                .to_string();
+            if token.len() < 20 || token.contains(' ') {
+                return Err("that does not look like the AniList token; copy the whole box".into());
+            }
+            trackers::Tokens { access: token, refresh: None, expires: db::now() + 360 * 86_400 }
+        }
+        "mal" => {
+            let code = trackers::code_from(&pasted).ok_or("paste the whole address the browser ended up on")?;
+            let verifier = MAL_VERIFIER.lock().map_err(err)?.clone().ok_or("start the sign-in again")?;
+            trackers::mal_exchange(&code, &verifier).await.map_err(chain)?
+        }
+        _ => return Err("unknown service".into()),
+    };
+    let name = trackers::whoami(&service, &tokens.access).await.map_err(chain)?;
+    let conn = state.conn.lock().map_err(err)?;
+    save_tracker(&conn, &service, &name, &tokens)?;
+    *MAL_VERIFIER.lock().map_err(err)? = None;
+    Ok(name)
+}
+
+#[tauri::command]
+fn tracker_signout(state: State<'_, AppState>, service: String) -> Result<(), String> {
+    if creds::SUPPORTED {
+        creds::forget(&tracker_secret_key(&service, "access")).ok();
+        creds::forget(&tracker_secret_key(&service, "refresh")).ok();
+    }
+    let conn = state.conn.lock().map_err(err)?;
+    db::forget_tracker_account(&conn, &service).map_err(chain)
+}
+
+#[tauri::command]
+async fn tracker_search(state: State<'_, AppState>, service: String, query: String) -> Result<Vec<trackers::Media>, String> {
+    let token = tracker_token(&state, &service).await.unwrap_or_default();
+    trackers::search(&service, &token, &query).await.map_err(chain)
+}
+
+#[tauri::command]
+fn tracker_link(
+    state: State<'_, AppState>,
+    series: String,
+    service: String,
+    media_id: i64,
+    title: String,
+    volumes: Option<i64>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::link_tracker(&conn, &db::TrackerLink { series, service, media_id, title, volumes, pushed_at: None }).map_err(chain)
+}
+
+#[tauri::command]
+fn tracker_unlink(state: State<'_, AppState>, series: String, service: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::unlink_tracker(&conn, &series, &service).map_err(chain)
+}
+
+/// Send her progress on a series to every service it is linked on.
+/// Returns the services updated.
+#[tauri::command]
+async fn tracker_push(
+    state: State<'_, AppState>,
+    series: String,
+    volumes: i64,
+    completed: bool,
+    stars: Option<f64>,
+) -> Result<Vec<String>, String> {
+    let links: Vec<db::TrackerLink> = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::tracker_links(&conn).map_err(chain)?.into_iter().filter(|l| l.series == series).collect()
+    };
+    let mut done = Vec::new();
+    let mut problems = Vec::new();
+    for l in links {
+        let token = match tracker_token(&state, &l.service).await {
+            Ok(t) => t,
+            Err(e) => {
+                problems.push(format!("{}: {e}", l.service));
+                continue;
+            }
+        };
+        let completed = completed || l.volumes.is_some_and(|v| v > 0 && volumes >= v);
+        let p = trackers::Progress { volumes, completed, stars };
+        match trackers::push(&l.service, &token, l.media_id, &p).await {
+            Ok(()) => {
+                let conn = state.conn.lock().map_err(err)?;
+                db::tracker_pushed(&conn, &l.series, &l.service).ok();
+                done.push(l.service);
+            }
+            Err(e) => problems.push(format!("{}: {e}", l.service)),
+        }
+    }
+    if done.is_empty() && !problems.is_empty() {
+        return Err(problems.join("; "));
+    }
+    Ok(done)
 }
 
 // ---------------------------------------------------- history and stats
@@ -2343,6 +2707,20 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            opds_servers,
+            trackers_status,
+            tracker_signin_url,
+            tracker_finish_signin,
+            tracker_signout,
+            tracker_search,
+            tracker_link,
+            tracker_unlink,
+            tracker_push,
+            opds_add,
+            opds_remove,
+            opds_browse,
+            opds_image,
+            opds_download,
             record_session,
             reading_history,
             forget_history,

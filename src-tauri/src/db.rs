@@ -125,6 +125,35 @@ fn add_columns(conn: &Connection) -> Result<()> {
             path     TEXT PRIMARY KEY,
             added_at INTEGER NOT NULL
         );
+        -- AniList / MyAnimeList: the signed-in account per service (tokens
+        -- live in the system keyring where there is one), and which entry
+        -- each series in the library is linked to.
+        CREATE TABLE IF NOT EXISTS tracker_accounts (
+            service  TEXT PRIMARY KEY,
+            name     TEXT NOT NULL,
+            access   TEXT,
+            refresh  TEXT,
+            expires  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tracker_links (
+            series    TEXT NOT NULL,
+            service   TEXT NOT NULL,
+            media_id  INTEGER NOT NULL,
+            title     TEXT NOT NULL,
+            volumes   INTEGER,
+            pushed_at INTEGER,
+            PRIMARY KEY (series, service)
+        );
+        -- OPDS book servers (Komga, Kavita, Calibre-Web…). The password is
+        -- kept in the system keyring where there is one; on a phone, here.
+        CREATE TABLE IF NOT EXISTS opds_servers (
+            id       INTEGER PRIMARY KEY,
+            name     TEXT NOT NULL,
+            url      TEXT NOT NULL,
+            username TEXT,
+            password TEXT,
+            added_at INTEGER NOT NULL
+        );
         -- Time spent reading, for History and Statistics. The title is kept
         -- so a removed book still reads sensibly in the history.
         CREATE TABLE IF NOT EXISTS reading_sessions (
@@ -252,6 +281,113 @@ pub fn finished_at(conn: &Connection) -> Result<Vec<i64>> {
     let mut st = conn.prepare("SELECT COALESCE(marks_at, last_opened_at, 0) FROM books WHERE status = 'finished'")?;
     let rows = st.query_map([], |r| r.get::<_, i64>(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub struct TrackerAccount {
+    pub name: String,
+    pub access: Option<String>,
+    pub refresh: Option<String>,
+    pub expires: i64,
+}
+
+pub fn tracker_account(conn: &Connection, service: &str) -> Result<Option<TrackerAccount>> {
+    Ok(conn
+        .query_row(
+            "SELECT name, access, refresh, expires FROM tracker_accounts WHERE service = ?1",
+            params![service],
+            |r| Ok(TrackerAccount { name: r.get(0)?, access: r.get(1)?, refresh: r.get(2)?, expires: r.get(3)? }),
+        )
+        .optional()?)
+}
+
+pub fn set_tracker_account(conn: &Connection, service: &str, a: &TrackerAccount) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tracker_accounts(service, name, access, refresh, expires) VALUES(?1, ?2, ?3, ?4, ?5)",
+        params![service, a.name, a.access, a.refresh, a.expires],
+    )?;
+    Ok(())
+}
+
+pub fn forget_tracker_account(conn: &Connection, service: &str) -> Result<()> {
+    conn.execute("DELETE FROM tracker_accounts WHERE service = ?1", params![service])?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct TrackerLink {
+    pub series: String,
+    pub service: String,
+    pub media_id: i64,
+    pub title: String,
+    pub volumes: Option<i64>,
+    pub pushed_at: Option<i64>,
+}
+
+pub fn tracker_links(conn: &Connection) -> Result<Vec<TrackerLink>> {
+    let mut st = conn.prepare("SELECT series, service, media_id, title, volumes, pushed_at FROM tracker_links")?;
+    let rows = st.query_map([], |r| {
+        Ok(TrackerLink {
+            series: r.get(0)?,
+            service: r.get(1)?,
+            media_id: r.get(2)?,
+            title: r.get(3)?,
+            volumes: r.get(4)?,
+            pushed_at: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn link_tracker(conn: &Connection, l: &TrackerLink) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tracker_links(series, service, media_id, title, volumes, pushed_at) VALUES(?1, ?2, ?3, ?4, ?5, NULL)",
+        params![l.series, l.service, l.media_id, l.title, l.volumes],
+    )?;
+    Ok(())
+}
+
+pub fn unlink_tracker(conn: &Connection, series: &str, service: &str) -> Result<()> {
+    conn.execute("DELETE FROM tracker_links WHERE series = ?1 AND service = ?2", params![series, service])?;
+    Ok(())
+}
+
+pub fn tracker_pushed(conn: &Connection, series: &str, service: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE tracker_links SET pushed_at = ?3 WHERE series = ?1 AND service = ?2",
+        params![series, service, now()],
+    )?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct OpdsServer {
+    pub id: i64,
+    pub name: String,
+    pub url: String,
+    pub username: Option<String>,
+    #[serde(skip)]
+    pub password: Option<String>,
+}
+
+pub fn opds_servers(conn: &Connection) -> Result<Vec<OpdsServer>> {
+    let mut st = conn.prepare("SELECT id, name, url, username, password FROM opds_servers ORDER BY name")?;
+    let rows = st.query_map([], |r| {
+        Ok(OpdsServer { id: r.get(0)?, name: r.get(1)?, url: r.get(2)?, username: r.get(3)?, password: r.get(4)? })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn add_opds_server(conn: &Connection, name: &str, url: &str, username: Option<&str>, password: Option<&str>) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO opds_servers(name, url, username, password, added_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+        params![name, url, username, password, now()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn remove_opds_server(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM opds_servers WHERE id = ?1", params![id])?;
+    Ok(())
 }
 
 pub fn watch_folder(conn: &Connection, path: &str) -> Result<()> {

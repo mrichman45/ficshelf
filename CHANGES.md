@@ -2,6 +2,19 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.0
+
+Ideas borrowed from Mangayomi, for manga and comics especially.
+
+- **Long-strip (webtoon) mode** for comics: one continuous scroll instead of pages. It turns on by itself for books with very tall pages; switch between Pages, Right-to-left and Long strip in the comic settings.
+- **Display settings** in the reader (⋯ → Display): brightness, warmth, black and white, crop white borders off comic pages, keep the screen on, and auto-scroll at a speed you choose.
+- **History** (new in the menu): what you read and when, with **reading statistics**: time read this week, month and year, a daily streak, and the books you have spent most time with.
+- **Continue reading** row at the top of the Library.
+- **Incognito mode** (Library ⋯): nothing you open is added to history, statistics or AniList/MyAnimeList, and sync waits until you turn it off.
+- **Shelves**: pin tags as tabs across the top of the Library (Library ⋯ → Shelves…).
+- **Book servers** (new in the menu): browse, search and download from Komga, Kavita, Calibre-Web, Calibre's content server or any other OPDS catalogue.
+- **AniList and MyAnimeList**: sign in under Settings, link a series with its **Track** button, and your list is updated as you finish volumes.
+
 ## 1.1.9
 
 - The series header no longer stays on screen after going back to the list of all series.

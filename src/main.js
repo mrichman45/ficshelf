@@ -377,6 +377,7 @@ function show(view) {
   setNavMenu(false);
   window.__view = view; // for the error log: which screen she was on
   if (view === "history") renderHistoryView();
+  if (view === "servers" && $("#servers-browse").hidden) renderServers();
   refreshCooldown();
   if (view === "settings") renderLog();
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
@@ -405,6 +406,7 @@ async function refreshLibrary() {
   state.books = await call("list_books", { sort: state.sort });
   renderShelf();
   await refreshUpdateBadge();
+  checkTracking();
 }
 
 let filterTerms = { text: null, terms: [] };
@@ -1640,6 +1642,8 @@ function reportImport(report) {
 
 function closeReader() {
   stopReading();
+  stopAuto();
+  keepAwake(false);
   // Closing a book is a good moment to share where she stopped.
   if (state.reader) syncSoon();
   if (state.reader?.cleanup) {
@@ -1744,6 +1748,7 @@ async function openBook(id) {
   setVolumePaging(true);
   if (!history.state?.reader) history.pushState({ reader: true }, "");
   startReading(book);
+  if (pref("keepAwake", "1") === "1") keepAwake(true);
   $("#reader-title").textContent = book.title;
   $("#reader-author").textContent = book.author || "";
   syncDayNight();
@@ -1773,6 +1778,189 @@ async function openBook(id) {
 function saveWhere(book, position) {
   invoke("save_position", { id: book.id, position: String(position) }).catch(() => {});
   readingTick(true);
+}
+
+// ------------------------------------------------------------ display
+//
+// Brightness (a dimming layer over the page), warmth and black-and-white
+// (a filter on the page), for every kind of book.
+
+function applyDisplay() {
+  const bright = Number(pref("dispBright", "100"));
+  const warm = Number(pref("dispWarm", "0"));
+  const gray = pref("dispGray", "") === "1";
+  $("#reader-dim").style.opacity = String(Math.max(0, Math.min(0.75, 1 - bright / 100)));
+  const f = [];
+  if (warm > 0) f.push(`sepia(${warm}%)`);
+  if (gray) f.push("grayscale(1)");
+  $("#reader-stage").style.filter = f.join(" ");
+}
+applyDisplay();
+
+function speedLabel() {
+  return `Speed ${pref("autoSpeed", "4")}`;
+}
+
+$("#reader-display").addEventListener("click", () => {
+  $("#more-sheet").close();
+  $("#disp-bright").value = pref("dispBright", "100");
+  $("#disp-warm").value = pref("dispWarm", "0");
+  $("#disp-gray").checked = pref("dispGray", "") === "1";
+  $("#disp-crop").checked = pref("cropBorders", "") === "1";
+  $("#disp-awake").checked = pref("keepAwake", "1") === "1";
+  $("#disp-speed").value = pref("autoSpeed", "4");
+  $("#disp-speed-label").textContent = speedLabel();
+  $("#disp-auto").textContent = auto.on ? "Stop auto-scroll" : "Start auto-scroll";
+  $("#display-sheet").showModal();
+});
+$("#disp-bright").addEventListener("input", (e) => {
+  setPref("dispBright", e.target.value);
+  applyDisplay();
+});
+$("#disp-warm").addEventListener("input", (e) => {
+  setPref("dispWarm", e.target.value);
+  applyDisplay();
+});
+$("#disp-gray").addEventListener("change", (e) => {
+  setPref("dispGray", e.target.checked ? "1" : "");
+  applyDisplay();
+});
+$("#disp-crop").addEventListener("change", (e) => {
+  setPref("cropBorders", e.target.checked ? "1" : "");
+  document.querySelectorAll("#cbz-zoom .pg, #cbz-strip img").forEach(applyCrop);
+});
+$("#disp-awake").addEventListener("change", (e) => {
+  setPref("keepAwake", e.target.checked ? "1" : "");
+  keepAwake(Boolean(state.reader) && e.target.checked);
+});
+$("#disp-speed").addEventListener("input", (e) => {
+  setPref("autoSpeed", e.target.value);
+  $("#disp-speed-label").textContent = speedLabel();
+  if (auto.on) startAuto(false);
+});
+$("#disp-auto").addEventListener("click", () => {
+  $("#display-sheet").close();
+  if (auto.on) stopAuto();
+  else startAuto(true);
+});
+$("#disp-done").addEventListener("click", () => $("#display-sheet").close());
+
+// -- keep the screen on while a book is open
+let wakeLock = null;
+async function keepAwake(on) {
+  const bridge = window.FicShelfAndroid;
+  if (bridge?.keepScreenOn) {
+    bridge.keepScreenOn(Boolean(on));
+    return;
+  }
+  try {
+    if (on && !wakeLock && navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen");
+    if (!on && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch {
+    wakeLock = null;
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  // A wake lock is dropped when the app is hidden; take it again on return.
+  if (document.visibilityState === "visible" && state.reader && pref("keepAwake", "1") === "1") {
+    wakeLock = null;
+    keepAwake(true);
+  }
+});
+
+// -- auto-scroll: long strips glide, everything else turns pages by itself
+const auto = { on: false, raf: 0, timer: 0 };
+function startAuto(announce) {
+  if (!state.reader) return;
+  stopAuto();
+  auto.on = true;
+  const speed = Number(pref("autoSpeed", "4"));
+  const r = state.reader;
+  if (r.scrollBy) {
+    let last = performance.now();
+    let carry = 0;
+    const step = (t) => {
+      if (!auto.on) return;
+      carry += ((t - last) / 1000) * speed * 28; // 28 to 280 pixels a second
+      last = t;
+      const whole = Math.floor(carry);
+      if (whole) {
+        carry -= whole;
+        r.scrollBy(whole);
+      }
+      auto.raf = requestAnimationFrame(step);
+    };
+    auto.raf = requestAnimationFrame(step);
+  } else {
+    // Speed 1 turns every 30 seconds, 10 every 3.
+    auto.timer = setInterval(() => state.reader?.next?.(), Math.round(30000 / speed));
+  }
+  if (announce) toast("Auto-scroll is on. Tap the page to stop.");
+}
+function stopAuto() {
+  auto.on = false;
+  cancelAnimationFrame(auto.raf);
+  clearInterval(auto.timer);
+}
+$("#reader-stage").addEventListener("pointerdown", () => auto.on && stopAuto(), true);
+
+// -- crop white borders on comic pages (object-view-box shows only the
+// part with content; the image itself is untouched)
+const cropCache = new Map();
+function cropInset(img) {
+  const key = `${img.src.length}:${img.src.slice(-80)}`;
+  if (cropCache.has(key)) return cropCache.get(key);
+  const W = 140;
+  const H = Math.max(1, Math.round((W * img.naturalHeight) / Math.max(1, img.naturalWidth)));
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(img, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data;
+  const ink = (x, y) => {
+    const k = (y * W + x) * 4;
+    return 0.3 * d[k] + 0.59 * d[k + 1] + 0.11 * d[k + 2] < 232;
+  };
+  const rowHas = (y) => {
+    let n = 0;
+    for (let x = 0; x < W; x++) if (ink(x, y)) n++;
+    return n > W * 0.012;
+  };
+  const colHas = (x) => {
+    let n = 0;
+    for (let y = 0; y < H; y++) if (ink(x, y)) n++;
+    return n > H * 0.012;
+  };
+  let top = 0, bottom = H - 1, left = 0, right = W - 1;
+  while (top < H / 3 && !rowHas(top)) top++;
+  while (bottom > (H * 2) / 3 && !rowHas(bottom)) bottom--;
+  while (left < W / 3 && !colHas(left)) left++;
+  while (right > (W * 2) / 3 && !colHas(right)) right--;
+  const pct = (n, of) => Math.max(0, ((n - 1) / of) * 100).toFixed(2);
+  const inset = `inset(${pct(top, H)}% ${pct(W - 1 - right, W)}% ${pct(H - 1 - bottom, H)}% ${pct(left, W)}%)`;
+  cropCache.set(key, inset);
+  if (cropCache.size > 400) cropCache.delete(cropCache.keys().next().value);
+  return inset;
+}
+function applyCrop(img) {
+  if (!img) return;
+  if (pref("cropBorders", "") !== "1" || !img.src) {
+    img.style.objectViewBox = "";
+    return;
+  }
+  if (!img.complete || !img.naturalWidth) {
+    img.addEventListener("load", () => applyCrop(img), { once: true });
+    return;
+  }
+  try {
+    img.style.objectViewBox = cropInset(img);
+  } catch {
+    img.style.objectViewBox = "";
+  }
 }
 
 // ------------------------------------------------------ reading sessions
@@ -1840,6 +2028,493 @@ document.addEventListener("visibilitychange", () => {
   readingTick(false); // count up to now, then stop counting while away
   if (document.visibilityState === "hidden") flushReading();
   else reading.last = Date.now();
+});
+
+// ------------------------------------------------ AniList / MyAnimeList
+
+const SERVICE_NAME = { anilist: "AniList", mal: "MyAnimeList" };
+const tracking = { services: [], links: [] };
+
+async function loadTracking() {
+  try {
+    const [services, links] = await invoke("trackers_status");
+    tracking.services = services;
+    tracking.links = links;
+  } catch (e) {
+    logError("tracking", e);
+  }
+  return tracking;
+}
+
+function renderTrackerAccounts() {
+  const box = $("#tracker-accounts");
+  box.textContent = "";
+  for (const s of tracking.services) {
+    const row = document.createElement("div");
+    row.className = "server-row";
+    const label = document.createElement("div");
+    label.className = "server-open";
+    const n = document.createElement("strong");
+    n.textContent = SERVICE_NAME[s.service];
+    const sub = document.createElement("span");
+    sub.className = "muted small";
+    sub.textContent = !s.available
+      ? "Not set up in this build of FicShelf."
+      : s.account
+        ? `Signed in as ${s.account}`
+        : "Not signed in";
+    label.append(n, sub);
+    row.appendChild(label);
+    if (s.available) {
+      const b = document.createElement("button");
+      b.textContent = s.account ? "Sign out" : "Sign in";
+      b.addEventListener("click", async () => {
+        if (s.account) {
+          await call("tracker_signout", { service: s.service });
+          await loadTracking();
+          renderTrackerAccounts();
+        } else startSignin(s.service);
+      });
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
+}
+
+let signinService = null;
+async function startSignin(service) {
+  try {
+    const url = await invoke("tracker_signin_url", { service });
+    signinService = service;
+    $("#signin-title").textContent = `Sign in to ${SERVICE_NAME[service]}`;
+    $("#signin-help").textContent =
+      service === "anilist"
+        ? "Your browser is opening AniList. Approve FicShelf there, then copy the long token it shows and paste it below."
+        : "Your browser is opening MyAnimeList. Approve FicShelf there; you will land on FicShelf's GitHub page. Copy that page's whole address from the address bar and paste it below.";
+    $("#signin-paste").value = "";
+    $("#signin-status").textContent = "";
+    $("#signin-dialog").showModal();
+    await invoke("open_link", { url });
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+$("#signin-cancel").addEventListener("click", () => $("#signin-dialog").close());
+$("#signin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#signin-status").textContent = "Signing in…";
+  try {
+    const name = await invoke("tracker_finish_signin", { service: signinService, pasted: $("#signin-paste").value });
+    $("#signin-dialog").close();
+    toast(`Signed in to ${SERVICE_NAME[signinService]} as ${name}.`);
+    await loadTracking();
+    renderTrackerAccounts();
+  } catch (err) {
+    $("#signin-status").textContent = String(err);
+    logError("tracker sign-in", err);
+  }
+});
+
+/// What the library says about a series: volumes finished, all finished,
+/// average stars.
+function seriesProgress(name) {
+  const books = state.books.filter((b) => groupOf(b) === name);
+  const finished = books.filter((b) => readStatus(b) === "finished");
+  const rated = books.filter((b) => b.rating);
+  return {
+    volumes: finished.length,
+    completed: books.length > 0 && finished.length === books.length,
+    stars: rated.length ? rated.reduce((n, b) => n + b.rating, 0) / rated.length : null,
+  };
+}
+
+let trackService = "anilist";
+async function openTrackDialog() {
+  const series = state.openSeries;
+  if (!series) return;
+  await loadTracking();
+  const usable = tracking.services.filter((s) => s.available);
+  if (!usable.length) {
+    toast("Tracking is not set up in this build of FicShelf.", true);
+    return;
+  }
+  if (!usable.some((s) => s.service === trackService)) trackService = usable[0].service;
+  $("#track-series").textContent = series;
+  $("#track-query").value = series.replace(/\s*\(.*?\)\s*/g, " ").trim();
+  const tabs = $("#track-service");
+  tabs.textContent = "";
+  for (const s of usable) {
+    const b = document.createElement("button");
+    b.textContent = SERVICE_NAME[s.service];
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(s.service === trackService));
+    b.addEventListener("click", () => {
+      trackService = s.service;
+      openTrackDialog();
+    });
+    tabs.appendChild(b);
+  }
+  renderTrackLinked();
+  $("#track-results").textContent = "";
+  $("#track-status").textContent = "";
+  if (!$("#track-dialog").open) $("#track-dialog").showModal();
+  searchTrack();
+}
+
+function renderTrackLinked() {
+  const box = $("#track-linked");
+  box.textContent = "";
+  const service = tracking.services.find((s) => s.service === trackService);
+  const link = tracking.links.find((l) => l.series === state.openSeries && l.service === trackService);
+  if (!service?.account) {
+    box.textContent = `Sign in to ${SERVICE_NAME[trackService]} in Settings to update your list. You can still link the series now.`;
+  }
+  if (link) {
+    const p = document.createElement("p");
+    p.textContent = `Linked to “${link.title}”${link.pushed_at ? `, last updated ${new Date(link.pushed_at * 1000).toLocaleDateString()}` : ""}.`;
+    const now = document.createElement("button");
+    now.textContent = "Update now";
+    now.addEventListener("click", () => pushTracking(link.series, true));
+    const un = document.createElement("button");
+    un.textContent = "Unlink";
+    un.addEventListener("click", async () => {
+      await call("tracker_unlink", { series: link.series, service: link.service });
+      await loadTracking();
+      renderTrackLinked();
+    });
+    const row = document.createElement("div");
+    row.className = "row";
+    row.append(now, un);
+    box.append(p, row);
+  }
+}
+
+async function searchTrack() {
+  const q = $("#track-query").value.trim();
+  if (!q) return;
+  $("#track-status").textContent = "Searching…";
+  try {
+    const found = await invoke("tracker_search", { service: trackService, query: q });
+    $("#track-status").textContent = found.length ? "" : "Nothing found; try a shorter name.";
+    const box = $("#track-results");
+    box.textContent = "";
+    for (const m of found) {
+      const card = document.createElement("article");
+      card.className = "lookup-card";
+      if (m.cover) {
+        const img = document.createElement("img");
+        img.src = m.cover;
+        img.alt = "";
+        img.loading = "lazy";
+        card.appendChild(img);
+      } else {
+        const d = document.createElement("div");
+        d.className = "lookup-nocover";
+        card.appendChild(d);
+      }
+      const info = document.createElement("div");
+      const t = document.createElement("strong");
+      t.textContent = m.title;
+      const sub = document.createElement("div");
+      sub.className = "muted small";
+      sub.textContent = [m.kind, m.year, m.volumes ? `${m.volumes} volumes` : null].filter(Boolean).join(" · ");
+      const link = document.createElement("button");
+      link.className = "primary";
+      link.textContent = "Link this";
+      link.addEventListener("click", async () => {
+        await call("tracker_link", {
+          series: state.openSeries,
+          service: trackService,
+          mediaId: m.id,
+          title: m.title,
+          volumes: m.volumes ?? null,
+        });
+        await loadTracking();
+        renderTrackLinked();
+        // Nothing is sent yet, so her existing progress there is not
+        // overwritten; the list is updated when she next finishes a volume
+        // (or taps Update now).
+        const all = pushedProgress();
+        const p = seriesProgress(state.openSeries);
+        all[state.openSeries] = `${p.volumes}|${p.completed}|${p.stars}`;
+        setPref("trackPushed", JSON.stringify(all));
+        toast(`Linked to ${m.title} on ${SERVICE_NAME[trackService]}.`);
+      });
+      info.append(t, sub, link);
+      card.appendChild(info);
+      box.appendChild(card);
+    }
+  } catch (e) {
+    $("#track-status").textContent = String(e);
+  }
+}
+
+$("#btn-series-track").addEventListener("click", openTrackDialog);
+$("#track-search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  searchTrack();
+});
+$("#track-close").addEventListener("click", () => $("#track-dialog").close());
+
+/// Last progress sent per series, so lists are only updated on a change.
+function pushedProgress() {
+  try {
+    return JSON.parse(pref("trackPushed", "{}")) || {};
+  } catch {
+    return {};
+  }
+}
+
+async function pushTracking(series, loud = false) {
+  const p = seriesProgress(series);
+  try {
+    const done = await invoke("tracker_push", { series, ...p });
+    const all = pushedProgress();
+    all[series] = `${p.volumes}|${p.completed}|${p.stars}`;
+    setPref("trackPushed", JSON.stringify(all));
+    if (done.length) {
+      const names = done.map((s) => SERVICE_NAME[s]).join(" and ");
+      if (loud || p.volumes) toast(`Updated ${series} on ${names}: ${p.volumes} read${p.completed ? ", completed" : ""}.`);
+      await loadTracking();
+      if ($("#track-dialog").open) renderTrackLinked();
+    }
+  } catch (e) {
+    logError(`tracking (${series})`, e);
+    if (loud) toast(`Could not update the list: ${e}`, true, false);
+  }
+}
+
+let trackingTimer = 0;
+/// After the library changes, update the lists for tracked series whose
+/// progress moved (not in incognito mode).
+function checkTracking() {
+  clearTimeout(trackingTimer);
+  trackingTimer = setTimeout(async () => {
+    if (incognito()) return;
+    await loadTracking();
+    if (!tracking.links.length) return;
+    const signedIn = new Set(tracking.services.filter((s) => s.account).map((s) => s.service));
+    const pushed = pushedProgress();
+    const series = new Set(tracking.links.filter((l) => signedIn.has(l.service)).map((l) => l.series));
+    for (const name of series) {
+      const p = seriesProgress(name);
+      const key = `${p.volumes}|${p.completed}|${p.stars}`;
+      if (pushed[name] === undefined) {
+        // First look since linking was recorded elsewhere: remember, don't push.
+        pushed[name] = key;
+        setPref("trackPushed", JSON.stringify(pushed));
+      } else if (pushed[name] !== key) {
+        await pushTracking(name);
+      }
+    }
+  }, 1500);
+}
+
+loadTracking().then(renderTrackerAccounts);
+
+// -------------------------------------------------------- book servers
+
+const opds = { server: null, stack: [], feed: null };
+
+async function renderServers() {
+  let list = [];
+  try {
+    list = await invoke("opds_servers");
+  } catch (e) {
+    logError("servers", e);
+  }
+  const box = $("#servers-list");
+  box.textContent = "";
+  if (!list.length) {
+    box.innerHTML = "<p class='muted'>No servers yet.</p>";
+    $("#server-add").open = true;
+  }
+  for (const srv of list) {
+    const row = document.createElement("div");
+    row.className = "server-row";
+    const open = document.createElement("button");
+    open.className = "server-open";
+    const n = document.createElement("strong");
+    n.textContent = srv.name;
+    const u = document.createElement("span");
+    u.className = "muted small";
+    u.textContent = srv.url;
+    open.append(n, u);
+    open.addEventListener("click", () => browseServer(srv));
+    const del = document.createElement("button");
+    del.textContent = "Remove";
+    del.addEventListener("click", async () => {
+      if (!(await confirmAsk(`Remove the server “${srv.name}”? Books already downloaded stay in the library.`))) return;
+      await call("opds_remove", { id: srv.id });
+      renderServers();
+    });
+    row.append(open, del);
+    box.appendChild(row);
+  }
+}
+
+$("#server-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#srv-status").textContent = "Checking the server…";
+  try {
+    const srv = await invoke("opds_add", {
+      name: $("#srv-name").value,
+      url: $("#srv-url").value,
+      username: $("#srv-user").value || null,
+      password: $("#srv-pass").value || null,
+    });
+    $("#srv-status").textContent = "";
+    for (const id of ["srv-name", "srv-url", "srv-user", "srv-pass"]) $(`#${id}`).value = "";
+    $("#server-add").open = false;
+    toast(`Added ${srv.name}.`);
+    renderServers();
+  } catch (err) {
+    $("#srv-status").textContent = String(err);
+    logError("add server", err);
+  }
+});
+
+async function browseServer(srv) {
+  opds.server = srv;
+  opds.stack = [];
+  $("#servers-home").hidden = true;
+  $("#servers-browse").hidden = false;
+  await loadFeed(null);
+}
+
+async function loadFeed(url, { query = null, append = false } = {}) {
+  busy($("#opds-busy"), true);
+  $("#opds-status").textContent = "";
+  try {
+    const feed = await invoke("opds_browse", {
+      id: opds.server.id,
+      url,
+      search: query ? opds.feed?.search || null : null,
+      query,
+    });
+    if (append && opds.feed) {
+      opds.feed.entries.push(...feed.entries);
+      opds.feed.next = feed.next;
+    } else {
+      if (opds.feed && !query) opds.stack.push(opds.feed);
+      if (query && opds.feed) opds.stack.push(opds.feed);
+      opds.feed = feed;
+      // Search stays available inside a server even where a page lacks it.
+      if (!feed.search && opds.stack.length) feed.search = opds.stack.find((f) => f.search)?.search || null;
+    }
+    renderFeed();
+  } catch (e) {
+    $("#opds-status").textContent = String(e);
+    logError("browse server", e);
+  } finally {
+    busy($("#opds-busy"), false);
+  }
+}
+
+function renderFeed() {
+  const f = opds.feed;
+  $("#opds-title").textContent = query_title(f);
+  $("#opds-search").hidden = !f.search;
+  $("#opds-more").hidden = !f.next;
+  const box = $("#opds-entries");
+  box.textContent = "";
+  if (!f.entries.length) $("#opds-status").textContent = "Nothing here.";
+  for (const e of f.entries) box.appendChild(opdsCard(e));
+}
+
+function query_title(f) {
+  return f.title || opds.server?.name || "Server";
+}
+
+function opdsCard(e) {
+  const el = document.createElement("article");
+  el.className = "lookup-card";
+  const art = document.createElement("div");
+  art.className = "lookup-nocover";
+  art.textContent = e.feed ? "📁" : "📘";
+  el.appendChild(art);
+  if (e.cover) {
+    invoke("opds_image", { id: opds.server.id, url: e.cover })
+      .then((src) => {
+        if (!src) return;
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        art.replaceWith(img);
+      })
+      .catch(() => {});
+  }
+  const info = document.createElement("div");
+  const t = document.createElement("strong");
+  t.textContent = e.title;
+  info.appendChild(t);
+  if (e.author) {
+    const a = document.createElement("div");
+    a.className = "muted small";
+    a.textContent = e.author;
+    info.appendChild(a);
+  }
+  if (e.summary) {
+    const d = document.createElement("p");
+    d.className = "small";
+    d.textContent = e.summary.length > 200 ? `${e.summary.slice(0, 200)}…` : e.summary;
+    info.appendChild(d);
+  }
+  const row = document.createElement("div");
+  row.className = "row";
+  if (e.feed) {
+    const open = document.createElement("button");
+    open.textContent = "Open";
+    open.addEventListener("click", () => loadFeed(e.feed));
+    row.appendChild(open);
+    el.addEventListener("click", (ev) => ev.target === el && loadFeed(e.feed));
+  }
+  if (e.downloads.length) {
+    const [href, kind] = e.downloads[0];
+    const get = document.createElement("button");
+    get.className = "primary";
+    const fmt = (kind.match(/(epub|pdf|cbz|cbr|cb7|mobi|zip)/i) || [])[1] || "file";
+    get.textContent = `Download ${fmt.toUpperCase()}`;
+    get.addEventListener("click", async () => {
+      get.disabled = true;
+      get.textContent = "Downloading…";
+      try {
+        const book = await invoke("opds_download", { id: opds.server.id, url: href, title: e.title });
+        get.textContent = "In your library ✓";
+        refreshLibrary();
+        toast(`Added “${book.title}” to your library.`);
+      } catch (err) {
+        get.disabled = false;
+        get.textContent = `Download ${fmt.toUpperCase()}`;
+        logError(`server download (${e.title})`, err);
+        toast(`Could not download it: ${err}`, true, false);
+      }
+    });
+    row.appendChild(get);
+  }
+  info.appendChild(row);
+  el.appendChild(info);
+  return el;
+}
+
+$("#opds-back").addEventListener("click", () => {
+  const prev = opds.stack.pop();
+  if (prev) {
+    opds.feed = prev;
+    $("#opds-status").textContent = "";
+    renderFeed();
+  } else {
+    opds.feed = null;
+    $("#servers-browse").hidden = true;
+    $("#servers-home").hidden = false;
+    renderServers();
+  }
+});
+$("#opds-more").addEventListener("click", () => opds.feed?.next && loadFeed(opds.feed.next, { append: true }));
+$("#opds-search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#opds-query").value.trim();
+  if (q) loadFeed(null, { query: q });
 });
 
 // ------------------------------------------------------ history and stats
@@ -3464,8 +4139,180 @@ function comicDirection(book, hint) {
   return pref(`dir.${book.id}`, hint ? "rtl" : "ltr");
 }
 
+/// Pages or one long strip, per comic. Not chosen yet: a comic whose first
+/// pages are much taller than wide (a webtoon) starts as a strip.
+async function comicMode(book, pages) {
+  const chosen = pref(`mode.${book.id}`, "");
+  if (chosen === "strip" || chosen === "pages") return chosen;
+  try {
+    const probe = pages.slice(0, 3);
+    const sizes = await Promise.all(
+      probe.map(
+        async (name) =>
+          new Promise(async (res) => {
+            const im = new Image();
+            im.onload = () => res(im.naturalHeight / Math.max(1, im.naturalWidth));
+            im.onerror = () => res(1.4);
+            im.src = await invoke("cbz_page", { id: book.id, name });
+          }),
+      ),
+    );
+    return sizes.filter((r) => r > 2.2).length >= Math.min(2, sizes.length) ? "strip" : "pages";
+  } catch {
+    return "pages";
+  }
+}
+
+/// A comic as one long strip, top to bottom, the way webtoons are read.
+/// Pages load as they come near and are let go again far away, so a
+/// 300-page strip stays light.
+async function openStrip(book, pages) {
+  const strip = $("#cbz-strip");
+  strip.hidden = false;
+  strip.textContent = "";
+  $("#view-reader").classList.add("kind-cbz", "kind-strip");
+  let current = Math.min(Math.max(parseInt(book.position || "0", 10) || 0, 0), pages.length - 1);
+  const slots = pages.map((_, i) => {
+    const d = document.createElement("div");
+    d.className = "strip-page";
+    d.dataset.i = String(i);
+    strip.appendChild(d);
+    return d;
+  });
+  const loaded = new Map();
+  let alive = true;
+
+  const load = async (i) => {
+    if (!alive || loaded.has(i) || i < 0 || i >= pages.length) return;
+    const img = new Image();
+    img.alt = "";
+    img.decoding = "async";
+    loaded.set(i, img);
+    try {
+      img.src = await invoke("cbz_page", { id: book.id, name: pages[i] });
+      await img.decode().catch(() => {});
+      if (!alive || loaded.get(i) !== img) return;
+      slots[i].style.height = "";
+      slots[i].classList.add("ready");
+      slots[i].appendChild(img);
+      applyCrop(img);
+    } catch {
+      loaded.delete(i);
+    }
+  };
+  const unload = (i) => {
+    const img = loaded.get(i);
+    if (!img) return;
+    // Keep its height so nothing below jumps.
+    slots[i].style.height = `${slots[i].getBoundingClientRect().height}px`;
+    img.remove();
+    img.src = "";
+    loaded.delete(i);
+  };
+  const tidy = () => {
+    for (const i of [...loaded.keys()]) if (Math.abs(i - current) > 14) unload(i);
+  };
+
+  const near = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) if (e.isIntersecting) load(Number(e.target.dataset.i));
+    },
+    { root: strip, rootMargin: "200% 0px" },
+  );
+  slots.forEach((s) => near.observe(s));
+
+  const label = () => `${current + 1} / ${pages.length}`;
+  let saveTimer = 0;
+  const whereNow = () => {
+    // The page at a third of the way down the screen is "the" page.
+    const mark = strip.scrollTop + strip.clientHeight / 3;
+    let lo = 0;
+    let hi = slots.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (slots[mid].offsetTop <= mark) lo = mid;
+      else hi = mid - 1;
+    }
+    if (lo !== current) {
+      current = lo;
+      $("#reader-progress").textContent = label();
+      showPageNumber(current + 1, pages.length, label());
+      tidy();
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => saveWhere(book, current), 700);
+    }
+  };
+  let ticking = false;
+  const onScroll = () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      whereNow();
+    });
+  };
+  strip.addEventListener("scroll", onScroll, { passive: true });
+
+  // Taps: the middle shows the toolbar; above or below scrolls by most of a
+  // screen.
+  let down = null;
+  const onDown = (e) => (down = { x: e.clientX, y: e.clientY, at: Date.now() });
+  const onUp = (e) => {
+    const d = down;
+    down = null;
+    if (!d || Date.now() - d.at > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;
+    const r = strip.getBoundingClientRect();
+    const fy = (e.clientY - r.top) / r.height;
+    if (fy > 0.3 && fy < 0.7) $("#view-reader").classList.toggle("show-chrome");
+    else page(fy >= 0.7 ? 1 : -1);
+  };
+  strip.addEventListener("pointerdown", onDown);
+  strip.addEventListener("pointerup", onUp);
+
+  const page = (dir) => strip.scrollBy({ top: dir * strip.clientHeight * 0.85, behavior: "smooth" });
+  const goTo = async (n) => {
+    current = Math.min(Math.max(Math.round(n) - 1, 0), pages.length - 1);
+    await load(current);
+    slots[current].scrollIntoView({ block: "start" });
+    whereNow();
+  };
+
+  state.reader = {
+    book,
+    kind: "cbz",
+    strip: true,
+    rtl: false,
+    next: () => page(1),
+    prev: () => page(-1),
+    scrollBy: (px) => strip.scrollBy(0, px),
+    total: () => pages.length,
+    current: () => current + 1,
+    mark: () => current + 1,
+    restore: (n) => goTo(n),
+    goTo,
+    setDirection: () => {},
+    relayout: () => {},
+    cleanup: () => {
+      alive = false;
+      near.disconnect();
+      clearTimeout(saveTimer);
+      strip.removeEventListener("scroll", onScroll);
+      strip.removeEventListener("pointerdown", onDown);
+      strip.removeEventListener("pointerup", onUp);
+      for (const i of [...loaded.keys()]) unload(i);
+      strip.textContent = "";
+      strip.hidden = true;
+      $("#view-reader").classList.remove("kind-strip");
+    },
+  };
+  $("#reader-progress").textContent = label();
+  showPageNumber(current + 1, pages.length, label());
+  await goTo(current + 1);
+}
+
 async function openCbz(book, pages, rtlHint) {
   if (!pages.length) throw new Error("no images in this archive");
+  if ((await comicMode(book, pages)) === "strip") return openStrip(book, pages);
   const view = $("#cbz-view");
   const zoomLayer = $("#cbz-zoom");
   const [imgA, imgB] = zoomLayer.querySelectorAll(".pg");
@@ -3578,6 +4425,8 @@ async function openCbz(book, pages, rtlHint) {
     imgA.src = order[0];
     imgB.hidden = order.length < 2;
     imgB.src = order[1] || "";
+    applyCrop(imgA);
+    if (!imgB.hidden) applyCrop(imgB);
     // Forward in a right-to-left comic brings the next page from the left.
     if (turn) playTurn(zoomLayer, rtl ? -turn : turn);
     const first = group[0] + 1;
@@ -3810,8 +4659,29 @@ function syncComicSheet() {
   const r = state.reader;
   const dir = r?.rtl ? "rtl" : "ltr";
   document.querySelectorAll("#comic-dir button").forEach((b) => b.classList.toggle("active", b.dataset.dir === dir));
+  const mode = state.reader?.strip ? "strip" : "pages";
+  document.querySelectorAll("#comic-mode button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+    b.setAttribute("aria-checked", String(b.dataset.mode === mode));
+  });
   const layout = pref("comicLayout", "auto");
-  document.querySelectorAll("#comic-layout button").forEach((b) =>
+  document.querySelectorAll("#comic-mode button").forEach((b) =>
+  b.addEventListener("click", async () => {
+    const r = state.reader;
+    if (!r || r.kind !== "cbz") return;
+    const want = b.dataset.mode;
+    if ((want === "strip") === Boolean(r.strip)) return;
+    setPref(`mode.${r.book.id}`, want);
+    $("#comic-sheet").close();
+    // Reopen at the same page in the other mode.
+    const id = r.book.id;
+    const at = r.current() - 1;
+    closeReader();
+    await invoke("save_position", { id, position: String(at) }).catch(() => {});
+    await openBook(id);
+  }),
+);
+document.querySelectorAll("#comic-layout button").forEach((b) =>
     b.classList.toggle("active", b.dataset.layout === layout),
   );
 }

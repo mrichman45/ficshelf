@@ -39,6 +39,7 @@ IMPORTS = [
     "android.os.Build",
     "android.os.Environment",
     "android.provider.Settings",
+    "android.view.WindowManager",
     "android.net.Uri",
     "androidx.core.content.FileProvider",
     "java.io.File",
@@ -93,6 +94,16 @@ MEMBERS = f"""
 
       @JavascriptInterface
       fun pickFolderPath() {{ runOnUiThread {{ ficshelfPickFolderPath.launch(null) }} }}
+
+      // Keep the screen on while a book is open (Display → Keep the screen
+      // on).
+      @JavascriptInterface
+      fun keepScreenOn(on: Boolean) {{
+        runOnUiThread {{
+          if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+          else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }}
+      }}
 
       @JavascriptInterface
       fun openExternally(path: String, mime: String): Boolean {{
