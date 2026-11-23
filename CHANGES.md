@@ -5,6 +5,7 @@ Each release's section here is shown at the top of its page on GitHub.
 ## 1.2.5
 
 - Opens EPUBs that stopped with "uncompressed data size mismatch": books whose files are labelled with the wrong sizes inside are mended as they open (your file is left as it is).
+- An automatic sync that finds no internet (phones often cut apps off as they go into the background) is tried again when you come back to FicShelf, instead of going in the error log.
 
 ## 1.2.4
 

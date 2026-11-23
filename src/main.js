@@ -5331,7 +5331,7 @@ renderQueue();
 // runs by itself when the app starts, a moment after closing a book, and
 // when the app goes to the background; "Sync now" runs it by hand.
 
-const syncUi = { status: null, running: false, lastError: "", timer: null };
+const syncUi = { status: null, running: false, lastError: "", timer: null, retry: false };
 
 function describeSync() {
   const st = syncUi.status;
@@ -5381,7 +5381,15 @@ async function runSync(quiet = true) {
       );
     }
   } catch (e) {
-    syncUi.lastError = typeof e === "string" ? e : e?.message || String(e);
+    const msg = typeof e === "string" ? e : e?.message || String(e);
+    // No network for the moment (often: the phone cuts off apps going into
+    // the background). Not a failure worth logging; try again on return.
+    const offline = /dns error|failed to lookup|\(Connect\)|connection (refused|reset)|network is unreachable|timed out/i.test(msg);
+    if (quiet && offline) {
+      syncUi.retry = true;
+      return;
+    }
+    syncUi.lastError = offline ? "no internet connection right now." : msg;
     logError(quiet ? "sync (automatic)" : "sync", e);
     if (!quiet) toast(`Sync failed: ${syncUi.lastError}`, true);
   } finally {
@@ -5444,7 +5452,10 @@ $("#sync-disconnect").addEventListener("click", async () => {
 // phone), so the other devices see where she stopped.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") runSync(true);
-  else if (!$("#sync-signin").hidden) invoke("sync_nudge").catch(() => {});
+  else if (syncUi.retry) {
+    syncUi.retry = false;
+    syncSoon(1500);
+  } else if (!$("#sync-signin").hidden) invoke("sync_nudge").catch(() => {});
 });
 
 // ------------------------------------------------------------- settings
