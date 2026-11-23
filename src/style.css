@@ -1393,3 +1393,14 @@ input.narrow { width: 5em; display: inline-block; }
 .tracker-accounts { display: flex; flex-direction: column; gap: 6px; }
 #signin-paste { width: 100%; font: inherit; box-sizing: border-box; }
 #track-dialog .tabs { margin: 6px 0; }
+
+/* ------------------------------------------------------ settings groups */
+
+#view-settings .setting:not(.in-group) { display: none !important; }
+.settings-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.settings-groups { display: flex; flex-direction: column; gap: 8px; max-width: 70ch; }
+.settings-groups button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink);
+}
+.settings-groups button::after { content: none; }

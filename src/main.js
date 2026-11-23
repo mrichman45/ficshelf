@@ -379,11 +379,31 @@ function show(view) {
   if (view === "history") renderHistoryView();
   if (view === "servers" && $("#servers-browse").hidden) renderServers();
   refreshCooldown();
-  if (view === "settings") renderLog();
+  if (view === "settings") {
+    renderLog();
+    if (!settingsGroupWanted) openSettingsGroup(null);
+    settingsGroupWanted = false;
+  }
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
 }
 
 $$("#nav button[data-view]").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+
+// Settings opens on a short list of groups; each group is its own screen.
+var settingsGroupWanted = false;
+function openSettingsGroup(group) {
+  const view = $("#view-settings");
+  view.dataset.group = group || "";
+  $("#settings-groups").hidden = !!group;
+  $("#settings-back").hidden = !group;
+  const btn = group && document.querySelector(`[data-open-group="${group}"] strong`);
+  $("#settings-title").textContent = btn ? btn.textContent : "Settings";
+  $$("#view-settings .setting").forEach((el) => el.classList.toggle("in-group", el.dataset.group === group));
+  view.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+$$("[data-open-group]").forEach((b) => b.addEventListener("click", () => openSettingsGroup(b.dataset.openGroup)));
+$("#settings-back").addEventListener("click", () => openSettingsGroup(null));
 
 // On a phone the sections sit behind a ☰ menu rather than a row that has
 // to be scrolled sideways.
@@ -3999,7 +4019,11 @@ for (const id of ["#reader-aa", "#reader-notes", "#reader-comic"]) {
 $("#more-settings").addEventListener("click", () => {
   $("#more-sheet").close();
   leaveReader();
-  setTimeout(() => show("settings"), 0);
+  setTimeout(() => {
+    settingsGroupWanted = true;
+    openSettingsGroup("reading");
+    show("settings");
+  }, 0);
 });
 $("#more-close").addEventListener("click", () => $("#more-sheet").close());
 
@@ -4735,7 +4759,7 @@ async function loadMoreResults() {
     $("#ao3-status").textContent = `${searchState.count} works.`;
     $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
   } catch {
-    $("#ao3-status").textContent = `${searchState.count} works. Loading more failed — see Settings → Error log.`;
+    $("#ao3-status").textContent = `${searchState.count} works. Loading more failed — see Settings → About and help.`;
     $("#btn-search-more").hidden = false;
   } finally {
     searchState.loading = false;
@@ -4771,7 +4795,7 @@ async function runSearch() {
     // A full page means AO3 probably has more.
     $("#btn-search-more").hidden = hits.length < AO3_PAGE_SIZE;
   } catch {
-    $("#ao3-status").textContent = "That didn't work — the reason is in Settings → Error log.";
+    $("#ao3-status").textContent = "That didn't work — the reason is in Settings → About and help.";
   } finally {
     busy($("#search-busy"), false);
   }

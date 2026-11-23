@@ -323,8 +323,19 @@
       </section>
 
       <section id="view-settings" class="view">
-        <h2>Settings</h2>
-        <div class="setting desktop-only">
+        <header class="bar settings-bar">
+          <button id="settings-back" class="icon" title="Back" hidden>←</button>
+          <h2 id="settings-title" class="bar-title">Settings</h2>
+        </header>
+        <div id="settings-groups" class="settings-groups">
+          <button data-open-group="reading"><strong>Reading and appearance</strong><span class="muted small">Theme, tapping the page, volume keys</span></button>
+          <button data-open-group="library"><strong>Library and storage</strong><span class="muted small">Downloads folder, watched folders, backups</span></button>
+          <button data-open-group="ao3"><strong>AO3</strong><span class="muted small">Your account, how fetching works</span></button>
+          <button data-open-group="sync"><strong>Sync and sharing</strong><span class="muted small">Google Drive sync, share over Wi-Fi</span></button>
+          <button data-open-group="tracking"><strong>AniList and MyAnimeList</strong><span class="muted small">Track your manga reading</span></button>
+          <button data-open-group="about"><strong>About and help</strong><span class="muted small">Version, updates, error log</span></button>
+        </div>
+        <div class="setting desktop-only" data-group="library">
           <label>Downloads folder</label>
           <div class="row">
             <code id="library-dir"></code>
@@ -336,7 +347,7 @@
             elsewhere are left where they are.
           </p>
         </div>
-        <div class="setting android-only">
+        <div class="setting android-only" data-group="library">
           <label>Save downloads to</label>
           <div class="tabs" role="radiogroup" id="phone-storage">
             <button data-storage="app" role="radio">In the app</button>
@@ -351,7 +362,7 @@
             Downloads you already have stay where they are.
           </p>
         </div>
-        <div class="setting">
+        <div class="setting" data-group="tracking">
           <h3>AniList and MyAnimeList</h3>
           <p class="muted small">
             Link a series to its entry (the <strong>Track</strong> button on a series)
@@ -360,7 +371,7 @@
           </p>
           <div id="tracker-accounts" class="tracker-accounts"></div>
         </div>
-        <div class="setting">
+        <div class="setting" data-group="reading">
           <h3>Appearance</h3>
           <div class="tabs" role="radiogroup" id="theme-picker">
             <button data-theme-choice="system" role="radio">System</button>
@@ -397,7 +408,7 @@
           </div>
         </div>
 
-        <div class="setting" id="sync-setting">
+        <div class="setting" id="sync-setting" data-group="sync">
           <h3>Sync between devices</h3>
           <p id="sync-state" class="muted"></p>
           <div id="sync-signin" hidden>
@@ -427,7 +438,7 @@
           </p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="reading">
           <h3>Tapping the page</h3>
           <div class="tabs" role="radiogroup" id="tapzone-picker">
             <button data-zones="sides" role="radio">Left / right</button>
@@ -442,7 +453,7 @@
           </p>
         </div>
 
-        <div class="setting android-only">
+        <div class="setting android-only" data-group="reading">
           <h3>Reading</h3>
           <label class="check">
             <input id="edge-dim" type="checkbox" checked />
@@ -458,7 +469,7 @@
           </p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="ao3">
           <h3>Your AO3 account</h3>
           <p class="muted">
             Optional. Signing in lets you save works their authors have
@@ -495,7 +506,7 @@
           </p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="ao3">
           <h3>About fetching from AO3</h3>
           <p class="muted">
             FicShelf downloads a work using AO3's own Download link, the same
@@ -511,7 +522,7 @@
           </p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="sync">
           <h3>Share over Wi-Fi</h3>
           <p class="muted">
             Open your library from another phone, tablet or computer on the
@@ -529,7 +540,7 @@
           </div>
         </div>
 
-        <div class="setting" id="watched-setting" hidden>
+        <div class="setting" id="watched-setting" hidden data-group="library">
           <h3>Folders FicShelf watches</h3>
           <p class="muted">
             Folders you added in place. New books put in them are added by
@@ -540,7 +551,7 @@
           <ul id="watched-list" class="watched-list"></ul>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="library">
           <h3>Backup and restore</h3>
           <p class="muted">
             A backup is one file with your library list, reading positions,
@@ -565,7 +576,7 @@
           <p id="backup-auto" class="muted"></p>
         </div>
 
-        <div class="setting" id="about">
+        <div class="setting" id="about" data-group="about">
           <h3>About FicShelf</h3>
           <p>FicShelf <span id="about-version"></span></p>
           <div class="row">
@@ -587,7 +598,7 @@
           </p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-group="about">
           <h3>Error log</h3>
           <p class="muted">
             Every error FicShelf shows is also written here, newest first, with
@@ -853,7 +864,7 @@
         <button data-flow="pages" role="radio">Pages</button>
         <button data-flow="scroll" role="radio">Scroll</button>
       </div>
-      <p class="muted small">Light, Paper, Sepia and Dark are under Settings → Appearance.</p>
+      <p class="muted small">Light, Paper, Sepia and Dark are under Settings → Reading and appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
     </dialog>
 
@@ -979,7 +990,7 @@
           <div class="welcome-icon" aria-hidden="true">🛟</div>
           <h2>Keep your place safe</h2>
           <p><strong>Sync between devices</strong> (Settings) carries your place, highlights and notes to your other phone or computer through your own Google Drive.</p>
-          <p>A backup of your reading data is also made every week. You'll find it under Settings → Backup and restore.</p>
+          <p>A backup of your reading data is also made every week. You'll find it under Settings → Library and storage.</p>
         </div>
         <div class="welcome-dots" aria-hidden="true"><span></span><span></span><span></span></div>
         <div class="row welcome-buttons">

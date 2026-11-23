@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.2
+
+- **Tidier Settings**: it opens on six groups (Reading and appearance, Library and storage, AO3, Sync and sharing, AniList and MyAnimeList, About and help), and each opens on its own screen. The reader's ⋯ → Settings goes straight to Reading and appearance.
+
 ## 1.2.1
 
 - **AniList and MyAnimeList sign-in now works** (Settings → AniList and MyAnimeList).
