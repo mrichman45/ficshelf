@@ -17,11 +17,10 @@ only to archiveofourown.org. FicShelf downloads works only when you ask it to.
 ## Google Drive sync (optional)
 
 If you connect Google Drive, FicShelf asks Google for one permission:
-`drive.appdata`, which gives it access only to a private folder that belongs
-to FicShelf inside your own Drive. FicShelf cannot see, read or change any of
-your other Drive files.
+`drive.file`, which gives it access only to files FicShelf itself created in
+your Drive. FicShelf cannot see, read or change any of your other Drive files.
 
-In that folder FicShelf keeps one file containing your reading positions,
+FicShelf creates one such file, `ficshelf-sync.json`, containing your reading positions,
 bookmarks, highlights, notes and edited book details, so your other devices
 can pick them up. Book files themselves are never uploaded.
 
@@ -33,11 +32,11 @@ including the Limited Use requirements.
 
 ## Removing your data
 
-- In FicShelf, Settings → Sync between devices → **Disconnect** signs the
+- In FicShelf, Settings → Sync and sharing → **Disconnect** signs the
   device out of Google.
-- To delete the synced file, open drive.google.com → ⚙ Settings →
-  **Manage apps** → FicShelf → **Delete hidden app data**, then remove
-  FicShelf's access at myaccount.google.com/permissions.
+- To delete the synced file, delete `ficshelf-sync.json` in drive.google.com
+  (and empty the bin), then remove FicShelf's access at
+  myaccount.google.com/permissions.
 - Uninstalling FicShelf removes everything it stored on that device.
 
 ## Contact

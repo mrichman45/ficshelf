@@ -1,13 +1,15 @@
 //! Google Drive, for sync: signing in with a code, and reading and writing
-//! one file in the account's hidden app-data folder.
+//! one file, "ficshelf-sync.json", in the account's Drive.
 //!
 //! Sign-in uses Google's flow for devices without a convenient browser: the
 //! app shows a short code, the user enters it at google.com/device on any
 //! phone or computer and approves. It works the same on Android, Windows and
 //! Linux, with nothing to redirect back into the app.
 //!
-//! The only permission asked for is `drive.appdata`: a private folder that
-//! only FicShelf can see. FicShelf never sees the rest of the user's Drive.
+//! The only permission asked for is `drive.file`: access to the files
+//! FicShelf itself created, and nothing else in the user's Drive. (The
+//! hidden app-data folder would be tidier, but Google does not allow its
+//! scope with the device sign-in flow: "invalid_scope".)
 //!
 //! The OAuth client id and secret are compiled in from the environment
 //! (FICSHELF_GOOGLE_CLIENT_ID / _SECRET, set as repository secrets for the
@@ -18,7 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::time::Duration;
 
-pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
+pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const DEVICE_CODE_URL: &str = "https://oauth2.googleapis.com/device/code";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
@@ -145,13 +147,15 @@ struct FileEntry {
     id: String,
 }
 
-/// The sync file's id in the app-data folder, if it exists yet.
+/// The sync file's id, if FicShelf has made it yet. With `drive.file`
+/// only files FicShelf created are listed, so a file of the same name she
+/// made herself is never picked up.
 pub async fn find_sync_file(http: &reqwest::Client, token: &str) -> Result<Option<String>> {
     let q = format!("name = '{SYNC_FILE}' and trashed = false");
     let resp = http
         .get(FILES_URL)
         .bearer_auth(token)
-        .query(&[("spaces", "appDataFolder"), ("q", q.as_str()), ("fields", "files(id)"), ("pageSize", "10")])
+        .query(&[("q", q.as_str()), ("fields", "files(id)"), ("orderBy", "modifiedTime desc"), ("pageSize", "10")])
         .send()
         .await
         .context("reaching Google Drive")?;
@@ -178,8 +182,8 @@ pub async fn download(http: &reqwest::Client, token: &str, id: &str) -> Result<V
     Ok(resp.bytes().await.context("reading the sync file")?.to_vec())
 }
 
-/// Write the sync file: replace it if it exists, otherwise create it in the
-/// app-data folder.
+/// Write the sync file: replace it if it exists, otherwise create it at the
+/// top of her Drive.
 pub async fn upload(http: &reqwest::Client, token: &str, existing: Option<&str>, json: &[u8]) -> Result<()> {
     let resp = if let Some(id) = existing {
         http.patch(format!("{UPLOAD_URL}/{id}"))
@@ -192,7 +196,9 @@ pub async fn upload(http: &reqwest::Client, token: &str, existing: Option<&str>,
     } else {
         // Metadata and contents together, as Drive's "multipart/related".
         let boundary = "ficshelf-sync-boundary-7f3a";
-        let meta = format!(r#"{{"name":"{SYNC_FILE}","parents":["appDataFolder"]}}"#);
+        let meta = format!(
+            r#"{{"name":"{SYNC_FILE}","description":"FicShelf's reading positions, bookmarks and notes, for syncing between devices. Deleting it is safe: FicShelf makes a new one."}}"#
+        );
         let mut body = Vec::with_capacity(json.len() + 300);
         body.extend_from_slice(
             format!(

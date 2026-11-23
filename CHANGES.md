@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.3
+
+- **Fixes Google Drive sync sign-in**, which Google refused with "invalid_scope". Sync now keeps its file, `ficshelf-sync.json`, in your Drive where you can see it, and FicShelf can still only see the files it made itself.
+
 ## 1.2.2
 
 - **Tidier Settings**: it opens on six groups (Reading and appearance, Library and storage, AO3, Sync and sharing, AniList and MyAnimeList, About and help), and each opens on its own screen. The reader's ⋯ → Settings goes straight to Reading and appearance.
