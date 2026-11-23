@@ -2069,27 +2069,81 @@ async fn sync_sign_out(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn forget_book(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let conn = state.conn.lock().map_err(err)?;
-    remember_removed(&conn, id);
-    db::forget_book(&conn, id).map_err(chain)
+/// Delete a book's file from the disk, when she asked for that too. Only a
+/// single file is ever deleted: a comic that is a folder of pictures is
+/// left where it is.
+fn delete_book_file(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    let meta = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    if !meta.is_file() {
+        return Err(format!("{path}: a folder, so it was left as it is"));
+    }
+    std::fs::remove_file(p).map_err(|e| format!("{path}: {e}"))
 }
 
-/// Remove several books from the library in one go (files are kept).
-/// Returns how many went.
+#[derive(Serialize)]
+struct Removed {
+    removed: usize,
+    deleted: usize,
+    /// Files that could not be deleted, with why.
+    problems: Vec<String>,
+}
+
 #[tauri::command]
-fn forget_books(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
-    let mut conn = state.conn.lock().map_err(err)?;
-    let tx = conn.transaction().map_err(err)?;
-    let mut removed = 0;
-    for id in &ids {
-        remember_removed(&tx, *id);
-        tx.execute("DELETE FROM annotations WHERE book_id = ?1", rusqlite::params![id]).map_err(err)?;
-        removed += tx.execute("DELETE FROM books WHERE id = ?1", rusqlite::params![id]).map_err(err)?;
+fn forget_book(state: State<'_, AppState>, id: i64, delete_file: Option<bool>) -> Result<Removed, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let path = db::get_book(&conn, id).map_err(chain)?.map(|b| b.path);
+    let delete = delete_file.unwrap_or(false);
+    if !delete {
+        remember_removed(&conn, id);
     }
-    tx.commit().map_err(err)?;
-    Ok(removed)
+    db::forget_book(&conn, id).map_err(chain)?;
+    let mut out = Removed { removed: 1, deleted: 0, problems: Vec::new() };
+    if let (true, Some(path)) = (delete, path) {
+        match delete_book_file(&path) {
+            Ok(()) => out.deleted = 1,
+            Err(e) => out.problems.push(e),
+        }
+    }
+    Ok(out)
+}
+
+/// Remove several books from the library in one go, and delete their files
+/// too when she asked for that.
+#[tauri::command]
+fn forget_books(state: State<'_, AppState>, ids: Vec<i64>, delete_files: Option<bool>) -> Result<Removed, String> {
+    let delete = delete_files.unwrap_or(false);
+    let mut paths = Vec::new();
+    let removed = {
+        let mut conn = state.conn.lock().map_err(err)?;
+        let tx = conn.transaction().map_err(err)?;
+        let mut removed = 0;
+        for id in &ids {
+            if delete {
+                if let Ok(Some(b)) = db::get_book(&tx, *id) {
+                    paths.push(b.path);
+                }
+            } else {
+                remember_removed(&tx, *id);
+            }
+            tx.execute("DELETE FROM annotations WHERE book_id = ?1", rusqlite::params![id]).map_err(err)?;
+            removed += tx.execute("DELETE FROM books WHERE id = ?1", rusqlite::params![id]).map_err(err)?;
+        }
+        tx.commit().map_err(err)?;
+        removed
+    };
+    let mut out = Removed { removed, deleted: 0, problems: Vec::new() };
+    for path in paths {
+        match delete_book_file(&path) {
+            Ok(()) => out.deleted += 1,
+            Err(e) => out.problems.push(e),
+        }
+    }
+    Ok(out)
 }
 
 /// A book she removed by hand is not added back by the next look through a

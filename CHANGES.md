@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.3.1
+
+- **Delete from disk:** after you confirm removing books from the library, FicShelf asks whether to delete their files from the device as well (Delete or Keep). Keep leaves them where they are, as before.
+
 ## 1.3.0
 
 Features found in other reading apps (Moon+ Reader, KOReader, Readest, Librera, Kindle).

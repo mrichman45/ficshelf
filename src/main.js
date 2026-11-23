@@ -901,11 +901,40 @@ $("#book-menu-remove").addEventListener("click", async () => {
   $("#book-menu").close();
   const book = menuBook;
   if (!book) return;
-  if (await confirmAsk(`Remove "${book.title}" from the library?\n\nThe file itself is not deleted.`)) {
-    await call("forget_book", { id: book.id });
-    await refreshLibrary();
+  if (!(await confirmAsk(`Remove "${book.title}" from the library?`))) return;
+  const deleteFile = await askDeleteFiles(1, book.path);
+  let r;
+  try {
+    r = await call("forget_book", { id: book.id, deleteFile });
+  } catch {
+    return;
   }
+  await refreshLibrary();
+  reportRemoved(r, deleteFile);
 });
+
+/// The second question after removing books: delete the files as well?
+async function askDeleteFiles(n, path) {
+  const what = n === 1 ? "its file" : `their ${n} files`;
+  const where = n === 1 && path ? `\n\n${path}` : "";
+  const msg = `Also delete ${what} from this device?${where}\n\nThis cannot be undone. Choose Keep to leave the file${n === 1 ? "" : "s"} where ${n === 1 ? "it is" : "they are"}.`;
+  try {
+    return await ask(msg, { title: "Delete from disk?", kind: "warning", okLabel: "Delete", cancelLabel: "Keep" });
+  } catch {
+    return window.confirm(msg);
+  }
+}
+
+function reportRemoved(r, deleteFile) {
+  const n = r?.removed ?? 0;
+  let msg = `Removed ${n} book${n === 1 ? "" : "s"} from the library`;
+  if (deleteFile) msg += ` and deleted ${r.deleted} file${r.deleted === 1 ? "" : "s"}`;
+  msg += ".";
+  if (r?.problems?.length) {
+    for (const p of r.problems) logError("delete file", p);
+    toast(`${msg} ${r.problems.length} file${r.problems.length === 1 ? "" : "s"} could not be deleted (see the error log).`, true, false);
+  } else toast(msg);
+}
 
 $("#book-menu-edit").addEventListener("click", () => {
   $("#book-menu").close();
@@ -1116,16 +1145,18 @@ $("#select-all").addEventListener("click", () => {
 $("#select-remove").addEventListener("click", async () => {
   const ids = [...selection.ids];
   if (!ids.length) return;
-  if (!(await confirmAsk(`Remove ${ids.length} book${ids.length === 1 ? "" : "s"} from the library?\n\nThe files themselves are not deleted.`))) return;
-  let removed = 0;
+  if (!(await confirmAsk(`Remove ${ids.length} book${ids.length === 1 ? "" : "s"} from the library?`))) return;
+  const one = ids.length === 1 ? state.books.find((b) => b.id === ids[0]) : null;
+  const deleteFiles = await askDeleteFiles(ids.length, one?.path);
+  let r;
   try {
-    removed = await call("forget_books", { ids });
+    r = await call("forget_books", { ids, deleteFiles });
   } catch {
     return; // the toast and the error log say why
   }
   stopSelecting();
   await refreshLibrary();
-  toast(`Removed ${removed} book${removed === 1 ? "" : "s"} from the library.`);
+  reportRemoved(r, deleteFiles);
 });
 $("#select-edit").addEventListener("click", () => {
   const n = selection.ids.size;
