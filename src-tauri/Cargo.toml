@@ -30,6 +30,7 @@ url = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
 # Cover thumbnails (decode the common formats, write JPEG).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # Comics kept as RAR (CBR) and 7-Zip (CB7).

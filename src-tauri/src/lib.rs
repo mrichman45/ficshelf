@@ -17,6 +17,7 @@ mod convert;
 mod share;
 mod opds;
 mod trackers;
+mod epubfix;
 mod mobi;
 mod creds;
 mod db;
@@ -681,7 +682,53 @@ async fn book_bytes(state: State<'_, AppState>, id: i64) -> Result<tauri::ipc::R
         return Ok(tauri::ipc::Response::new(bytes));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("could not read the book: {e}"))?;
+    if util::kind_of_ext(Path::new(&path).extension().map(|e| e.to_string_lossy()).as_deref().unwrap_or("")) == Some("epub") {
+        let bytes = tauri::async_runtime::spawn_blocking({
+            let dir = state.library_dir.lock().map_err(err)?.join(".converted");
+            let path = path.clone();
+            move || mended_epub(&dir, id, Path::new(&path), bytes)
+        })
+        .await
+        .map_err(err)?;
+        return Ok(tauri::ipc::Response::new(bytes));
+    }
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// An EPUB as the reader can unpack it: mended once if its zip records wrong
+/// sizes (see epubfix), and remembered as fine otherwise, until the file
+/// changes. The original file is never touched.
+fn mended_epub(cache: &Path, id: i64, path: &Path, bytes: Vec<u8>) -> Vec<u8> {
+    let stamp = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ok = cache.join(format!("{id}-{stamp}-{}.ok", bytes.len()));
+    let fixed = cache.join(format!("{id}-{stamp}-{}.fixed.epub", bytes.len()));
+    if ok.exists() {
+        return bytes;
+    }
+    if let Ok(b) = std::fs::read(&fixed) {
+        return b;
+    }
+    let mended = epubfix::mend(&bytes).ok().flatten();
+    if std::fs::create_dir_all(cache).is_ok() {
+        if let Ok(entries) = std::fs::read_dir(cache) {
+            for e in entries.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with(&format!("{id}-")) && (n.ends_with(".ok") || n.ends_with(".fixed.epub")) {
+                    std::fs::remove_file(e.path()).ok();
+                }
+            }
+        }
+        match &mended {
+            Some(m) => std::fs::write(&fixed, m).ok(),
+            None => std::fs::write(&ok, b"").ok(),
+        };
+    }
+    mended.unwrap_or(bytes)
 }
 
 fn converted_mobi(state: &AppState, id: i64, path: &Path) -> Result<Vec<u8>, String> {

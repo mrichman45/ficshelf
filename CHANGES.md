@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.5
+
+- Opens EPUBs that stopped with "uncompressed data size mismatch": books whose files are labelled with the wrong sizes inside are mended as they open (your file is left as it is).
+
 ## 1.2.4
 
 - **Connecting Google Drive works on phones.** FicShelf lost the sign-in while you approved it in the browser; it now keeps waiting, and checks as soon as you come back.

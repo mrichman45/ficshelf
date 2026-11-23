@@ -99,6 +99,13 @@ jobs:
         with:
           args: --bundles ${{ matrix.bundles }}
 
+      # Tests that need the app's own crates (zip, scraper…), run against
+      # the release build's dependencies.
+      - name: App tests
+        if: matrix.label == 'Linux'
+        working-directory: src-tauri
+        run: cargo test --release --lib -- epubfix opds trackers
+
       - name: Gather Windows files
         if: matrix.label == 'Windows'
         shell: pwsh
