@@ -2,6 +2,11 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.7
+
+- **Removing several books** (Library ⋯ → Select books → Remove) removes them all at once and says how many went.
+- Books you remove from a watched folder are not added back by the next folder check (unless the file changes).
+
 ## 1.1.6
 
 - **The bookshelf icon on Android.** Phones showed Tauri's default logo; now they show FicShelf's own, shaped to fit the phone's icon style.

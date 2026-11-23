@@ -1012,9 +1012,15 @@ $("#select-remove").addEventListener("click", async () => {
   const ids = [...selection.ids];
   if (!ids.length) return;
   if (!(await confirmAsk(`Remove ${ids.length} book${ids.length === 1 ? "" : "s"} from the library?\n\nThe files themselves are not deleted.`))) return;
-  for (const id of ids) await call("forget_book", { id }).catch(() => {});
+  let removed = 0;
+  try {
+    removed = await call("forget_books", { ids });
+  } catch {
+    return; // the toast and the error log say why
+  }
   stopSelecting();
   await refreshLibrary();
+  toast(`Removed ${removed} book${removed === 1 ? "" : "s"} from the library.`);
 });
 $("#select-edit").addEventListener("click", () => {
   const n = selection.ids.size;

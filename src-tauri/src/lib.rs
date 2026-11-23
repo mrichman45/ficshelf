@@ -1432,7 +1432,33 @@ async fn sync_sign_out(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn forget_book(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(err)?;
+    remember_removed(&conn, id);
     db::forget_book(&conn, id).map_err(chain)
+}
+
+/// Remove several books from the library in one go (files are kept).
+/// Returns how many went.
+#[tauri::command]
+fn forget_books(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    let mut conn = state.conn.lock().map_err(err)?;
+    let tx = conn.transaction().map_err(err)?;
+    let mut removed = 0;
+    for id in &ids {
+        remember_removed(&tx, *id);
+        tx.execute("DELETE FROM annotations WHERE book_id = ?1", rusqlite::params![id]).map_err(err)?;
+        removed += tx.execute("DELETE FROM books WHERE id = ?1", rusqlite::params![id]).map_err(err)?;
+    }
+    tx.commit().map_err(err)?;
+    Ok(removed)
+}
+
+/// A book she removed by hand is not added back by the next look through a
+/// watched folder, unless its file changes.
+fn remember_removed(conn: &rusqlite::Connection, id: i64) {
+    if let Ok(Some(book)) = db::get_book(conn, id) {
+        let size = std::fs::metadata(&book.path).map(|m| m.len() as i64).unwrap_or(-1);
+        db::set_scan_skip(conn, &book.path, size).ok();
+    }
 }
 
 // ------------------------------------------------- highlights and notes
@@ -2273,6 +2299,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            forget_books,
             share_start,
             share_stop,
             share_status,
