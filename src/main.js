@@ -5382,6 +5382,7 @@ async function runSync(quiet = true) {
     }
   } catch (e) {
     syncUi.lastError = typeof e === "string" ? e : e?.message || String(e);
+    logError(quiet ? "sync (automatic)" : "sync", e);
     if (!quiet) toast(`Sync failed: ${syncUi.lastError}`, true);
   } finally {
     syncUi.running = false;
@@ -5417,7 +5418,10 @@ $("#sync-connect").addEventListener("click", async () => {
     runSync(false);
   } catch (e) {
     const msg = typeof e === "string" ? e : String(e);
-    if (!/cancelled/i.test(msg)) toast(msg, true);
+    if (!/cancelled/i.test(msg)) {
+      logError("sync sign-in", msg);
+      toast(msg, true);
+    }
   } finally {
     $("#sync-signin").hidden = true;
     $("#sync-buttons").hidden = false;
