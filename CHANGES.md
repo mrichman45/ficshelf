@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.9
+
+- The series header no longer stays on screen after going back to the list of all series.
+
 ## 1.1.8
 
 - The Library remembers **All books / Series**, and the series you had open, after switching apps or restarting.
