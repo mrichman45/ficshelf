@@ -5151,7 +5151,9 @@ function pdfParagraphs(items) {
   const gaps = [];
   for (let i = 1; i < clean.length; i++) gaps.push(Math.abs(clean[i - 1].y - clean[i].y));
   const sorted = [...gaps].sort((a, b) => a - b);
-  const usual = sorted[Math.floor(sorted.length / 2)] || clean[0].size * 1.2;
+  // The ordinary line spacing: low in the range, so that paragraph and
+  // heading gaps do not pull it up on short pages.
+  const usual = sorted[Math.floor(sorted.length * 0.3)] || clean[0].size * 1.2;
   const sizes = clean.map((l) => l.size).sort((a, b) => a - b);
   const body = sizes[Math.floor(sizes.length / 2)] || 10;
   const out = [];
