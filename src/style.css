@@ -509,6 +509,9 @@ body.reading #nav { display: none; }
 /* -------------------------------------------------------------- series */
 
 .series-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+/* display: flex above would otherwise override the hidden attribute, leaving
+   the last-opened series' header on top of the list of all series. */
+.series-head[hidden] { display: none; }
 .series-head h2 { margin: 0; font-size: 18px; font-family: var(--serif); flex: 1; min-width: 0; }
 .card .count {
   position: absolute;
