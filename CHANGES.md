@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.1
+
+- **AniList and MyAnimeList sign-in now works** (Settings → AniList and MyAnimeList).
+
 ## 1.2.0
 
 Ideas borrowed from Mangayomi, for manga and comics especially.
