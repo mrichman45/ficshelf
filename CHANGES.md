@@ -2,6 +2,19 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 2.0.0
+
+FicShelf 2.0: everything from the 1.x releases together, finished.
+
+- **Reading:** EPUB, PDF (with a Text view that rewraps small print), Kindle books, comics (CBZ, CBR, CB7, folders) with a long-strip mode for webtoons, and podfic audio that keeps playing with the screen off.
+- **Read aloud**, dictionary and Wikipedia look-up, footnote pop-ups, a reading ruler, your own fonts and CSS, page-turn animations and tap zones you set yourself, and two books side by side.
+- **Your library:** watched folders, series, tags, ratings, shelves, Calibre-style search, bulk editing, duplicates, metadata look-up, and removing books with the choice of deleting their files.
+- **AO3:** search, bookmarks and update checks, paced and polite, with a cooldown when AO3 asks for one.
+- **Elsewhere:** Google Drive sync, OPDS book servers (Komga, Kavita, Calibre-Web), AniList and MyAnimeList tracking, share over Wi-Fi, backups.
+- **History and statistics**, Continue reading, and incognito mode.
+
+The detail of each change is in the sections below.
+
 ## 1.3.1
 
 - **Delete from disk:** after you confirm removing books from the library, FicShelf asks whether to delete their files from the device as well (Delete or Keep). Keep leaves them where they are, as before.
