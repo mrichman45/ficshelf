@@ -18,6 +18,7 @@ mod share;
 mod opds;
 mod trackers;
 mod epubfix;
+mod lookup_word;
 mod mobi;
 mod creds;
 mod db;
@@ -1764,6 +1765,7 @@ async fn save_podfic_url(
 /// page.
 #[tauri::command]
 fn look_up(app: tauri::AppHandle, word: String) -> Result<(), String> {
+    // Kept for "Open in Wiktionary" from the look-up pop-up.
     use tauri_plugin_opener::OpenerExt;
     let word: String = word.trim().chars().take(80).collect();
     if word.is_empty() {
@@ -1776,6 +1778,175 @@ fn look_up(app: tauri::AppHandle, word: String) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| format!("could not open the dictionary: {e}"))
+}
+
+// ---------------------------------------------------------- your fonts
+
+#[derive(Serialize)]
+struct UserFont {
+    file: String,
+    name: String,
+}
+
+fn fonts_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let d = app.path().app_data_dir().map_err(err)?.join("fonts");
+    std::fs::create_dir_all(&d).map_err(err)?;
+    Ok(d)
+}
+
+fn font_kind(bytes: &[u8]) -> Option<&'static str> {
+    match bytes.get(..4)? {
+        [0, 1, 0, 0] | b"true" => Some("ttf"),
+        b"OTTO" => Some("otf"),
+        b"wOFF" => Some("woff"),
+        b"wOF2" => Some("woff2"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn list_fonts(app: tauri::AppHandle) -> Result<Vec<UserFont>, String> {
+    let mut out: Vec<UserFont> = std::fs::read_dir(fonts_dir(&app)?)
+        .map_err(err)?
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().to_string();
+            let (stem, ext) = file.rsplit_once('.')?;
+            matches!(ext, "ttf" | "otf" | "woff" | "woff2").then(|| UserFont { name: stem.to_string(), file: file.clone() })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+/// Keep a font file she picked (sent as base64).
+#[tauri::command]
+fn add_font(app: tauri::AppHandle, name: String, data: String) -> Result<UserFont, String> {
+    let bytes = B64.decode(data.trim()).map_err(err)?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("that font file is over 20 MB".into());
+    }
+    let ext = font_kind(&bytes).ok_or("that is not a font file FicShelf can use (TTF, OTF, WOFF or WOFF2)")?;
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name);
+    let stem = util::safe_filename(stem, "Font");
+    let path = fonts_dir(&app)?.join(format!("{stem}.{ext}"));
+    std::fs::write(&path, &bytes).map_err(err)?;
+    Ok(UserFont { file: format!("{stem}.{ext}"), name: stem })
+}
+
+/// A font as a data: URL, for the book pages' @font-face.
+#[tauri::command]
+fn font_data(app: tauri::AppHandle, file: String) -> Result<String, String> {
+    if file.contains('/') || file.contains('\\') || file.starts_with('.') {
+        return Err("no such font".into());
+    }
+    let bytes = std::fs::read(fonts_dir(&app)?.join(&file)).map_err(err)?;
+    let mime = match font_kind(&bytes) {
+        Some("otf") => "font/otf",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        _ => "font/ttf",
+    };
+    Ok(format!("data:{mime};base64,{}", B64.encode(bytes)))
+}
+
+#[tauri::command]
+fn remove_font(app: tauri::AppHandle, file: String) -> Result<(), String> {
+    if file.contains('/') || file.contains('\\') || file.starts_with('.') {
+        return Err("no such font".into());
+    }
+    std::fs::remove_file(fonts_dir(&app)?.join(&file)).map_err(err)
+}
+
+// ------------------------------------------------------- notes export
+
+/// Write an exported text file (a book's highlights and notes) into the
+/// Notes folder beside the downloads, and return its path.
+#[tauri::command]
+fn save_export(state: State<'_, AppState>, name: String, content: String) -> Result<String, String> {
+    let dir = state.library_dir.lock().map_err(err)?.join("Notes");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let stem = util::safe_filename(&name, "Notes");
+    let path = dir.join(format!("{stem}.md"));
+    let tmp = dir.join(format!(".{stem}.md.part"));
+    std::fs::write(&tmp, content.as_bytes()).map_err(err)?;
+    util::place_file(&tmp, &path).map_err(err)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Show an exported file in the computer's file manager.
+#[tauri::command]
+fn reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())
+}
+
+// ------------------------------------------------------------ read aloud
+//
+// On Linux, where the system web view may have no voices of its own, read
+// aloud goes through speech-dispatcher's `spd-say` (installed with most
+// desktops). Windows' web view has its own voices.
+
+static SPEAKING: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+fn tts_system_available() -> bool {
+    cfg!(target_os = "linux")
+        && std::process::Command::new("spd-say")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+}
+
+/// Say one piece of text, returning when it has been said (or stopped).
+#[tauri::command]
+async fn tts_say(text: String, rate: f64) -> Result<(), String> {
+    // spd-say's rate runs -100..100, 0 being normal.
+    let rate = (((rate - 1.0) * 100.0).round() as i64).clamp(-100, 100).to_string();
+    let child = std::process::Command::new("spd-say")
+        .args(["-w", "-r", &rate, "--", text.trim()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not start speech: {e}"))?;
+    *SPEAKING.lock().map_err(err)? = Some(child);
+    tauri::async_runtime::spawn_blocking(|| loop {
+        let mut guard = match SPEAKING.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        match guard.as_mut().map(|c| c.try_wait()) {
+            Some(Ok(None)) => {}
+            _ => {
+                *guard = None;
+                return;
+            }
+        }
+        drop(guard);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    })
+    .await
+    .map_err(err)
+}
+
+#[tauri::command]
+fn tts_stop() {
+    if let Ok(mut g) = SPEAKING.lock() {
+        if let Some(mut c) = g.take() {
+            c.kill().ok();
+        }
+    }
+    if cfg!(target_os = "linux") {
+        std::process::Command::new("spd-say").arg("-C").status().ok();
+    }
+}
+
+/// Definitions and an encyclopedia summary for a selected word or name.
+#[tauri::command]
+async fn define(text: String) -> Result<lookup_word::Found, String> {
+    lookup_word::look_up(&text, "en").await.map_err(chain)
 }
 
 // ------------------------------------------------------------------ sync
@@ -2830,6 +3001,16 @@ pub fn run() {
             sync_finish_sign_in,
             sync_cancel_sign_in,
             sync_nudge,
+            tts_system_available,
+            tts_say,
+            tts_stop,
+            define,
+            save_export,
+            list_fonts,
+            add_font,
+            font_data,
+            remove_font,
+            reveal_file,
             sync_now,
             sync_open_page,
             sync_sign_out,

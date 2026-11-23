@@ -50,6 +50,9 @@ IMPORTS = [
     "androidx.activity.result.contract.ActivityResultContracts",
     "org.json.JSONArray",
     "org.json.JSONObject",
+    "android.speech.tts.TextToSpeech",
+    "android.speech.tts.UtteranceProgressListener",
+    "java.util.Locale",
 ]
 
 MEMBERS = f"""
@@ -152,7 +155,85 @@ MEMBERS = f"""
 
       @JavascriptInterface
       fun audioSaved(): String = FicShelfAudio.saved(this@MainActivity)
+
+      // Read aloud: the phone's own text-to-speech engine. Paragraphs are
+      // queued a few ahead, so reading carries on with the screen off;
+      // each one reports when it starts and ends.
+      @JavascriptInterface
+      fun ttsInit() {{ runOnUiThread {{ ficshelfTtsInit() }} }}
+
+      @JavascriptInterface
+      fun ttsVoices(): String = ficshelfTtsVoices()
+
+      @JavascriptInterface
+      fun ttsSpeak(id: String, text: String, rate: Double, voice: String, flush: Boolean) {{
+        runOnUiThread {{
+          val t = ficshelfTts ?: return@runOnUiThread
+          t.setSpeechRate(rate.toFloat())
+          if (voice.isNotEmpty()) t.voices?.firstOrNull {{ it.name == voice }}?.let {{ t.voice = it }}
+          t.speak(text, if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, id)
+        }}
+      }}
+
+      @JavascriptInterface
+      fun ttsStop() {{ runOnUiThread {{ ficshelfTts?.stop() }} }}
     }}, "FicShelfAndroid")
+  }}
+
+  private var ficshelfTts: TextToSpeech? = null
+  @Volatile private var ficshelfTtsReady = false
+
+  private fun ficshelfTtsEvent(kind: String, id: String) {{
+    ficshelfWebView?.post {{
+      ficshelfWebView?.evaluateJavascript(
+        "window.__ficshelfTts && window.__ficshelfTts(" + JSONObject.quote(kind) + "," + JSONObject.quote(id) + ")", null)
+    }}
+  }}
+
+  private fun ficshelfTtsInit() {{
+    if (ficshelfTts != null) {{
+      ficshelfTtsEvent(if (ficshelfTtsReady) "ready" else "failed", "")
+      return
+    }}
+    ficshelfTts = TextToSpeech(this) {{ status ->
+      ficshelfTtsReady = status == TextToSpeech.SUCCESS
+      if (!ficshelfTtsReady) {{
+        ficshelfTts = null
+        ficshelfTtsEvent("failed", "")
+        return@TextToSpeech
+      }}
+      ficshelfTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {{
+        override fun onStart(id: String) {{ ficshelfTtsEvent("start", id) }}
+        override fun onDone(id: String) {{ ficshelfTtsEvent("done", id) }}
+        @Deprecated("old API") override fun onError(id: String) {{ ficshelfTtsEvent("error", id) }}
+        override fun onError(id: String, code: Int) {{ ficshelfTtsEvent("error", id) }}
+      }})
+      ficshelfTtsEvent("ready", "")
+    }}
+  }}
+
+  private fun ficshelfTtsVoices(): String {{
+    val out = JSONArray()
+    val t = ficshelfTts ?: return out.toString()
+    try {{
+      val lang = Locale.getDefault().language
+      for (v in t.voices ?: emptySet()) {{
+        if (v.locale.language != lang && v.locale.language != "en") continue
+        if (v.features?.contains("notInstalled") == true) continue
+        val o = JSONObject()
+        o.put("id", v.name)
+        o.put("name", v.locale.displayName + (if (v.isNetworkConnectionRequired) " (online)" else "") + " · " + v.name.substringAfterLast('-'))
+        o.put("lang", v.locale.toLanguageTag())
+        out.put(o)
+      }}
+    }} catch (e: Exception) {{ }}
+    return out.toString()
+  }}
+
+  override fun onDestroy() {{
+    ficshelfTts?.shutdown()
+    ficshelfTts = null
+    super.onDestroy()
   }}
 
   // FicShelf: Add folder, read in place. The picker answers with a tree
@@ -804,6 +885,12 @@ AUDIO_MANIFEST_PERMS = """    <uses-permission android:name="android.permission.
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Read aloud: lets FicShelf find the phone's text-to-speech engine. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 """
 
 AUDIO_SERVICE = """

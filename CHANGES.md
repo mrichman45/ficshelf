@@ -2,6 +2,20 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.3.0
+
+Features found in other reading apps (Moon+ Reader, KOReader, Readest, Librera, Kindle).
+
+- **Read aloud** (⋮ → Read aloud, in EPUBs): your phone's or computer's voice reads the book, highlighting each paragraph and turning the pages as it goes. Pause, skip back or forward a paragraph, change the speed and voice, and set a sleep timer (15–60 minutes or the end of the chapter).
+- **Look up** a selected word or name: its dictionary meanings (Wiktionary) and a Wikipedia summary in a pop-up, plus **Translate** for any passage.
+- **Footnote pop-ups**: tap a note mark (¹, [2], *) to read the note without leaving the page.
+- **Export** a book's highlights, notes and bookmarks as a Markdown file (Bookmarks and notes → Export…), sorted by chapter. On a phone you can send it straight to another app.
+- **Reading ruler** (Display): a clear band over the lines you're reading, with the rest of the page dimmed. Drag its tab to move it.
+- **Your own fonts and CSS** (Aa): add TTF, OTF or WOFF fonts, and your own styling for every book. Press and hold one of your fonts to remove it.
+- **Page turns**: new Flip and Cover animations, and **your own tap zones**: choose what each of nine parts of the page does (next, previous, menu, bookmark, read aloud, chapters, search, day/night or nothing), and what swiping up or down does (Settings → Reading and appearance → Tapping the page → Your own).
+- **Two books side by side** (⋮ → A second book beside this one): an EPUB or Kindle book in the right half, with its own pages and place. Made for the Fold's inner screen and computers.
+- **PDF Text view** (⋮ in a PDF): a page's words rewrapped to fit the screen in your font and size, so small print reads on a phone.
+
 ## 1.2.5
 
 - Opens EPUBs that stopped with "uncompressed data size mismatch": books whose files are labelled with the wrong sizes inside are mended as they open (your file is left as it is).

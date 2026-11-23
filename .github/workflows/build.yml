@@ -104,7 +104,7 @@ jobs:
       - name: App tests
         if: matrix.label == 'Linux'
         working-directory: src-tauri
-        run: cargo test --release --lib -- epubfix opds trackers
+        run: cargo test --release --lib -- epubfix opds trackers lookup_word
 
       - name: Gather Windows files
         if: matrix.label == 'Windows'

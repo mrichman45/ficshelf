@@ -134,9 +134,77 @@ function applyTurn() {
 applyTurn();
 
 // Tap zones.
+const TAP_ACTIONS = [
+  ["next", "Next page"],
+  ["prev", "Previous page"],
+  ["menu", "Show the menu"],
+  ["bookmark", "Bookmark"],
+  ["tts", "Read aloud"],
+  ["toc", "Chapters"],
+  ["search", "Search"],
+  ["daynight", "Day / night"],
+  ["none", "Nothing"],
+];
+const DEFAULT_TAPMAP = ["prev", "menu", "next", "prev", "menu", "next", "prev", "menu", "next"];
+
+function tapMap() {
+  try {
+    const m = JSON.parse(pref("tapMap", ""));
+    if (Array.isArray(m) && m.length === 9) return m;
+  } catch {
+    /* default */
+  }
+  return [...DEFAULT_TAPMAP];
+}
+
+function actionSelect(value, onChange) {
+  const sel = document.createElement("select");
+  for (const [v, label] of TAP_ACTIONS) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = value;
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
+
 function syncTapZones() {
   const v = pref("tapZones", "sides");
   document.querySelectorAll("#tapzone-picker button").forEach((b) => b.classList.toggle("active", b.dataset.zones === v));
+  $("#tapmap").hidden = v !== "custom";
+  if (v !== "custom") return;
+  const grid = $("#tapmap-grid");
+  grid.textContent = "";
+  const map = tapMap();
+  map.forEach((act, i) =>
+    grid.appendChild(
+      actionSelect(act, (val) => {
+        const m = tapMap();
+        m[i] = val;
+        setPref("tapMap", JSON.stringify(m));
+      }),
+    ),
+  );
+  for (const [id, key] of [["#swipe-up", "swipeUp"], ["#swipe-down", "swipeDown"]]) {
+    const old = $(id);
+    const fresh = actionSelect(pref(key, "none"), (val) => setPref(key, val));
+    fresh.id = old.id;
+    old.replaceWith(fresh);
+  }
+}
+
+/// Everything a tap or swipe can be set to do.
+function runTapAction(act) {
+  const r = state.reader;
+  if (!r || !act || act === "none") return;
+  if (act === "next") return r.next?.();
+  if (act === "prev") return r.prev?.();
+  if (act === "menu") return $("#view-reader").classList.toggle("show-chrome");
+  if (act === "tts") return tts.on ? ttsPause() : ttsStart();
+  const button = { bookmark: "#reader-bookmark", toc: "#reader-toc", search: "#reader-search", daynight: "#reader-daynight" }[act];
+  if (button) $(button)?.click();
 }
 syncTapZones();
 document.querySelectorAll("#tapzone-picker button").forEach((b) =>
@@ -1661,6 +1729,8 @@ function reportImport(report) {
 // --------------------------------------------------------------- reader
 
 function closeReader() {
+  ttsStop();
+  closeSide();
   stopReading();
   stopAuto();
   keepAwake(false);
@@ -1674,6 +1744,7 @@ function closeReader() {
     }
   }
   state.reader = null;
+  applyRuler();
   setVolumePaging(false);
   $("#view-reader").classList.remove("kind-epub");
   $("#select-bar").hidden = true;
@@ -1789,6 +1860,7 @@ async function openBook(id) {
       }
       syncBookmarkButton();
     }
+    applyRuler();
   } catch (e) {
     $("#reader-error").hidden = false;
     $("#reader-error").textContent = `Could not open this file: ${e}`;
@@ -1799,6 +1871,583 @@ function saveWhere(book, position) {
   invoke("save_position", { id: book.id, position: String(position) }).catch(() => {});
   readingTick(true);
 }
+
+// ------------------------------------------------------- side by side
+//
+// A second EPUB (or Kindle book) in the right half of the reader, with its
+// own pages and place. The main book keeps the left half.
+
+const side = { book: null, epub: null, rendition: null, observer: null };
+
+function closeSide() {
+  try {
+    side.observer?.disconnect();
+    side.rendition?.destroy();
+    side.epub?.destroy();
+  } catch {
+    /* closing anyway */
+  }
+  Object.assign(side, { book: null, epub: null, rendition: null, observer: null });
+  $("#side-area").textContent = "";
+  $("#side-pane").hidden = true;
+  $("#reader-stage").classList.remove("split");
+}
+
+function renderSidePicker() {
+  const q = $("#side-filter").value.trim().toLowerCase();
+  const list = $("#side-list");
+  list.textContent = "";
+  const books = state.books
+    .filter((b) => (b.format === "epub" || b.format === "mobi") && !b.drm && b.id !== state.reader?.book?.id)
+    .filter((b) => !q || `${b.title} ${b.author || ""}`.toLowerCase().includes(q))
+    .slice(0, 80);
+  for (const b of books) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.textContent = b.author ? `${b.title} — ${b.author}` : b.title;
+    btn.addEventListener("click", () => {
+      $("#side-picker").close();
+      openSide(b);
+    });
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+  if (!books.length) list.innerHTML = "<li class='muted small'>No EPUB or Kindle books match.</li>";
+}
+
+$("#reader-side").addEventListener("click", () => {
+  $("#more-sheet").close();
+  if (side.book) return closeSide();
+  $("#side-filter").value = "";
+  renderSidePicker();
+  $("#side-picker").showModal();
+});
+$("#side-filter").addEventListener("input", renderSidePicker);
+$("#side-cancel").addEventListener("click", () => $("#side-picker").close());
+$("#side-close").addEventListener("click", closeSide);
+$("#side-prev").addEventListener("click", () => side.rendition?.prev());
+$("#side-next").addEventListener("click", () => side.rendition?.next());
+
+async function openSide(book) {
+  closeSide();
+  $("#reader-stage").classList.add("split");
+  $("#side-pane").hidden = false;
+  $("#side-title").textContent = book.title;
+  $("#side-where").textContent = "Opening…";
+  const area = $("#side-area");
+  try {
+    const bytes = await invoke("book_bytes", { id: book.id });
+    if (!$("#reader-stage").classList.contains("split")) return;
+    const epub = ePub(bytes, { openAs: "binary" });
+    const size = () => {
+      const r = area.getBoundingClientRect();
+      return { width: Math.max(200, Math.floor(r.width - 16)) & ~1, height: Math.max(200, Math.floor(r.height)) };
+    };
+    const rendition = epub.renderTo(area, {
+      ...size(),
+      flow: "paginated",
+      manager: "default",
+      spread: "none",
+      allowScriptedContent: true,
+    });
+    rendition.themes.default({ "img, svg, image": { "max-width": "100% !important", "max-height": "92vh !important" } });
+    rendition.hooks.content.register((contents) => {
+      applyMargins(contents);
+      contents.window?.addEventListener("wheel", (e) => {
+        if (Math.abs(e.deltaY) > 3) (e.deltaY > 0 ? rendition.next() : rendition.prev());
+      }, { passive: true });
+    });
+    Object.assign(side, { book, epub, rendition });
+    await rendition.display(book.position || undefined).catch(() => rendition.display());
+    applyPageStyle(rendition);
+    // Taps: left half back, right half forward.
+    let start = null;
+    rendition.on("touchstart", (e) => {
+      const t = e.changedTouches?.[0];
+      if (t) start = { x: t.screenX, y: t.screenY, at: Date.now() };
+    });
+    rendition.on("touchend", (e) => {
+      const t = e.changedTouches?.[0];
+      if (!t || !start) return;
+      const dx = t.screenX - start.x;
+      const quick = Date.now() - start.at < 350;
+      start = null;
+      if (Math.abs(dx) > 50) return dx < 0 ? rendition.next() : rendition.prev();
+      if (!quick || Math.abs(dx) > 12) return;
+      const r = area.getBoundingClientRect();
+      const fx = (t.screenX - window.screenX - r.left) / r.width;
+      fx < 0.5 ? rendition.prev() : rendition.next();
+    });
+    rendition.on("relocated", (loc) => {
+      const pct = epub.locations?.percentageFromCfi?.(loc.start.cfi);
+      $("#side-where").textContent = typeof pct === "number" && !Number.isNaN(pct) ? `${Math.round(pct * 100)}%` : "";
+      invoke("save_position", { id: book.id, position: loc.start.cfi }).catch(() => {});
+    });
+    epub.ready.then(() => epub.locations.generate(1600)).catch(() => {});
+    let t = 0;
+    side.observer = new ResizeObserver(() => {
+      clearTimeout(t);
+      t = setTimeout(() => side.rendition && side.rendition.resize(size().width, size().height), 150);
+    });
+    side.observer.observe(area);
+  } catch (e) {
+    logError("side by side", e);
+    toast(`Could not open ${book.title}: ${e}`, true);
+    closeSide();
+  }
+}
+
+// -------------------------------------------------------- reading ruler
+
+function applyRuler() {
+  const on = pref("ruler", "") === "1" && Boolean(state.reader) && state.reader.kind !== "cbz";
+  const r = $("#reader-ruler");
+  r.hidden = !on;
+  $("#disp-ruler").checked = pref("ruler", "") === "1";
+  if (!on) return;
+  // About two lines of text at the current size.
+  const px = Math.round(16 * (fontSize() / 100) * 1.6 * 1.35);
+  r.style.setProperty("--ruler-h", `${px}px`);
+  r.style.setProperty("--ruler-y", `${Number(pref("rulerY", "0.3")) * 100}%`);
+}
+$("#disp-ruler").addEventListener("change", (e) => {
+  setPref("ruler", e.target.checked ? "1" : "");
+  applyRuler();
+});
+{
+  const grip = $("#reader-ruler .ruler-grip");
+  let dragging = false;
+  grip.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    grip.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const stage = $("#reader-stage").getBoundingClientRect();
+    const y = Math.min(0.92, Math.max(0, (e.clientY - stage.top) / stage.height - 0.02));
+    setPref("rulerY", y.toFixed(3));
+    $("#reader-ruler").style.setProperty("--ruler-y", `${y * 100}%`);
+  });
+  const end = () => (dragging = false);
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+}
+
+// ---------------------------------------------------------- read aloud
+//
+// Reads an EPUB aloud paragraph by paragraph, highlighting the one being
+// read and turning pages to follow it. The voice is the system's own: the
+// phone's text-to-speech engine (through FicShelfAndroid), the web view's
+// speechSynthesis (Windows), or speech-dispatcher on Linux.
+
+const TTS_SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5];
+const TTS_SLEEP = [0, 15, 30, 45, 60, -1]; // minutes; -1 = end of chapter
+const tts = {
+  on: false,
+  paused: false,
+  engine: null, // "android" | "web" | "spd"
+  chunks: [], // { id, text, el }
+  pos: 0, // the chunk being read
+  queued: 0, // chunks handed to the engine (android/web)
+  seq: 0, // bumps on every restart, so stale events are ignored
+  sleepUntil: 0,
+  sleepChapter: false,
+  sectionIndex: -1,
+};
+
+function ttsEngine() {
+  if (window.FicShelfAndroid?.ttsSpeak) return "android";
+  if ("speechSynthesis" in window && speechSynthesis.getVoices().length) return "web";
+  return null;
+}
+
+async function ttsPickEngine() {
+  if (window.FicShelfAndroid?.ttsSpeak) {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), 8000);
+      tts.onReady = (ok) => {
+        clearTimeout(t);
+        resolve(ok ? "android" : null);
+      };
+      window.FicShelfAndroid.ttsInit();
+    });
+  }
+  if ("speechSynthesis" in window) {
+    // Voices load asynchronously the first time.
+    if (!speechSynthesis.getVoices().length) {
+      await new Promise((r) => {
+        speechSynthesis.addEventListener("voiceschanged", r, { once: true });
+        setTimeout(r, 1500);
+      });
+    }
+    if (speechSynthesis.getVoices().length) return "web";
+  }
+  try {
+    if (await invoke("tts_system_available")) return "spd";
+  } catch {
+    /* not available */
+  }
+  return null;
+}
+
+window.__ficshelfTts = (kind, id) => {
+  if (kind === "ready") return tts.onReady?.(true);
+  if (kind === "failed") return tts.onReady?.(false);
+  ttsEvent(kind, id);
+};
+
+/// Block elements worth reading, in order, without reading nested ones twice.
+function ttsBlocks(doc) {
+  const sel = "p, h1, h2, h3, h4, h5, h6, li, blockquote, dt, dd, pre, figcaption, td, th, div";
+  const out = [];
+  for (const el of doc.body?.querySelectorAll(sel) || []) {
+    if (el.querySelector(sel.replace(/, div$/, ""))) continue; // has block children: read those
+    if (el.tagName === "DIV" && el.querySelector("div")) continue;
+    const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (text.length < 1) continue;
+    out.push({ el, text });
+  }
+  return out;
+}
+
+/// Long paragraphs are split into sentences (engines have length limits).
+function ttsSplit(text, max = 900) {
+  if (text.length <= max) return [text];
+  const parts = text.match(/[^.!?…]+[.!?…]+["'”’)]*\s*|[^.!?…]+$/g) || [text];
+  const out = [];
+  let cur = "";
+  for (const p of parts) {
+    if ((cur + p).length > max && cur) {
+      out.push(cur.trim());
+      cur = "";
+    }
+    cur += p;
+    while (cur.length > max) {
+      out.push(cur.slice(0, max));
+      cur = cur.slice(max);
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function ttsContents() {
+  const r = notes.rendition;
+  if (!r) return null;
+  const loc = r.currentLocation();
+  const idx = loc?.start?.index;
+  const all = r.getContents();
+  return all.find((c) => c.sectionIndex === idx) || all[0] || null;
+}
+
+/// Chunks for the section on screen, from the first paragraph on the page.
+function ttsLoadSection(fromStart) {
+  const contents = ttsContents();
+  if (!contents?.document) return false;
+  tts.sectionIndex = contents.sectionIndex;
+  const doc = contents.document;
+  if (!doc.getElementById("ficshelf-tts-style")) {
+    const st = doc.createElement("style");
+    st.id = "ficshelf-tts-style";
+    st.textContent = ".ficshelf-tts { background: rgba(255, 196, 0, 0.28) !important; border-radius: 3px; }";
+    doc.head?.appendChild(st);
+  }
+  const blocks = ttsBlocks(doc);
+  let startEl = null;
+  if (!fromStart) {
+    try {
+      const cfi = notes.rendition.currentLocation()?.start?.cfi;
+      const range = cfi && contents.range(cfi);
+      let node = range?.startContainer;
+      while (node && node.nodeType !== 1) node = node.parentNode;
+      startEl = node;
+    } catch {
+      /* start of the section then */
+    }
+  }
+  tts.chunks = [];
+  let started = !startEl;
+  for (const b of blocks) {
+    if (!started && (b.el === startEl || b.el.contains(startEl) || startEl.contains?.(b.el) ||
+        (b.el.compareDocumentPosition(startEl) & Node.DOCUMENT_POSITION_PRECEDING))) {
+      started = true;
+    }
+    if (!started) continue;
+    for (const t of ttsSplit(b.text)) tts.chunks.push({ text: t, el: b.el, contents });
+  }
+  if (!tts.chunks.length) for (const b of blocks) for (const t of ttsSplit(b.text)) tts.chunks.push({ text: t, el: b.el, contents });
+  tts.chunks.forEach((c, i) => (c.id = `${tts.seq}:${i}`));
+  tts.pos = 0;
+  tts.queued = 0;
+  return true;
+}
+
+function ttsMark(chunk) {
+  for (const old of chunk?.el?.ownerDocument?.querySelectorAll(".ficshelf-tts") || []) old.classList.remove("ficshelf-tts");
+  if (!chunk?.el) return;
+  chunk.el.classList.add("ficshelf-tts");
+  // Turn the page if the paragraph has moved off it.
+  try {
+    const r = notes.rendition;
+    const cfi = chunk.contents.cfiFromNode(chunk.el);
+    const loc = r.currentLocation();
+    const cmp = new ePub.CFI();
+    const end = loc?.end?.cfi;
+    const start = loc?.start?.cfi;
+    if ((end && cmp.compare(cfi, end) > 0) || (start && cmp.compare(cfi, start) < 0)) r.display(cfi);
+  } catch {
+    /* following the page is a nicety */
+  }
+}
+
+function ttsRate() {
+  return Number(pref("ttsRate", "1")) || 1;
+}
+
+function ttsSpeakChunk(c, flush) {
+  if (tts.engine === "android") {
+    window.FicShelfAndroid.ttsSpeak(c.id, c.text, ttsRate(), pref("ttsVoice", ""), flush);
+  } else if (tts.engine === "web") {
+    const u = new SpeechSynthesisUtterance(c.text);
+    u.rate = ttsRate();
+    const v = speechSynthesis.getVoices().find((x) => x.voiceURI === pref("ttsVoice", ""));
+    if (v) u.voice = v;
+    u.lang = v?.lang || c.el?.ownerDocument?.documentElement?.lang || "en";
+    u.onstart = () => ttsEvent("start", c.id);
+    u.onend = () => ttsEvent("done", c.id);
+    u.onerror = (e) => ttsEvent(e.error === "interrupted" || e.error === "canceled" ? "cancel" : "error", c.id);
+    if (flush) speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  } else if (tts.engine === "spd") {
+    const seq = tts.seq;
+    ttsEvent("start", c.id);
+    invoke("tts_say", { text: c.text, rate: ttsRate() })
+      .then(() => seq === tts.seq && ttsEvent("done", c.id))
+      .catch((e) => {
+        logError("read aloud", e);
+        ttsEvent("error", c.id);
+      });
+  }
+}
+
+/// Keep a few chunks queued ahead (one at a time for spd).
+function ttsFill(flush = false) {
+  if (!tts.on || tts.paused) return;
+  // Well ahead on a phone: with the screen off the app may not hear
+  // about each paragraph ending until it is woken.
+  const ahead = tts.engine === "spd" ? 1 : tts.engine === "android" ? 12 : 4;
+  let first = flush;
+  while (tts.queued < tts.chunks.length && tts.queued < tts.pos + ahead) {
+    ttsSpeakChunk(tts.chunks[tts.queued], first);
+    first = false;
+    tts.queued += 1;
+  }
+}
+
+function ttsEvent(kind, id) {
+  if (!tts.on) return;
+  const [seq, n] = String(id).split(":").map(Number);
+  if (seq !== tts.seq) return;
+  if (kind === "start") {
+    tts.pos = n;
+    ttsMark(tts.chunks[n]);
+    return;
+  }
+  if (kind === "cancel") return;
+  if (kind === "error") {
+    // Skip what could not be said rather than stopping.
+  }
+  if (n !== tts.pos && kind !== "error") tts.pos = n;
+  tts.pos = n + 1;
+  if (tts.sleepUntil && Date.now() >= tts.sleepUntil) return ttsStop("Sleep timer: stopped reading.");
+  if (tts.pos >= tts.chunks.length) {
+    if (tts.sleepChapter) return ttsStop("End of the chapter: stopped reading.");
+    return ttsNextSection();
+  }
+  ttsFill();
+}
+
+async function ttsNextSection() {
+  const r = notes.rendition;
+  const next = notes.epub?.spine?.get(tts.sectionIndex + 1);
+  if (!r || !next) return ttsStop("Finished reading the book.");
+  tts.seq += 1;
+  try {
+    await r.display(next.href);
+  } catch {
+    return ttsStop("Could not go on to the next chapter.");
+  }
+  if (!ttsLoadSection(true)) return ttsStop();
+  ttsFill(true);
+}
+
+function ttsCancelEngine() {
+  if (tts.engine === "android") window.FicShelfAndroid.ttsStop();
+  else if (tts.engine === "web") speechSynthesis.cancel();
+  else if (tts.engine === "spd") invoke("tts_stop").catch(() => {});
+}
+
+/// Start again from chunk `i` of the current list.
+function ttsRestartAt(i) {
+  tts.seq += 1;
+  tts.chunks.forEach((c, k) => (c.id = `${tts.seq}:${k}`));
+  ttsCancelEngine();
+  tts.pos = Math.max(0, Math.min(i, tts.chunks.length - 1));
+  tts.queued = tts.pos;
+  ttsMark(tts.chunks[tts.pos]);
+  setTimeout(() => ttsFill(true), tts.engine === "spd" ? 150 : 0);
+}
+
+async function ttsStart() {
+  if (state.reader?.kind !== "epub" || !notes.rendition) {
+    toast("Read aloud works in EPUB books.", true);
+    return;
+  }
+  if (!tts.engine) tts.engine = await ttsPickEngine();
+  if (!tts.engine) {
+    toast(
+      window.FicShelfAndroid
+        ? "This phone has no text-to-speech voice. Install one (Speech Services by Google) from the Play Store."
+        : "No voice found. On Linux, install speech-dispatcher (spd-say); on Windows, add a voice in Settings → Time & language → Speech.",
+      true,
+      false,
+    );
+    return;
+  }
+  tts.on = true;
+  tts.paused = false;
+  tts.seq += 1;
+  if (!ttsLoadSection(false)) {
+    tts.on = false;
+    toast("Nothing to read on this page.", true);
+    return;
+  }
+  $("#tts-bar").hidden = false;
+  $("#view-reader").classList.remove("show-chrome");
+  ttsBarSync();
+  ttsFill(true);
+}
+
+function ttsStop(message) {
+  if (!tts.on) return;
+  tts.on = false;
+  tts.seq += 1;
+  ttsCancelEngine();
+  ttsMark({ el: null });
+  for (const c of tts.chunks) c.el?.classList?.remove("ficshelf-tts");
+  tts.chunks = [];
+  tts.sleepUntil = 0;
+  tts.sleepChapter = false;
+  setPref("ttsSleep", "0");
+  $("#tts-bar").hidden = true;
+  if (message) toast(message);
+}
+
+function ttsPause() {
+  if (!tts.on) return;
+  if (tts.paused) {
+    tts.paused = false;
+    ttsRestartAt(tts.pos);
+  } else {
+    tts.paused = true;
+    tts.seq += 1;
+    ttsCancelEngine();
+  }
+  ttsBarSync();
+}
+
+function ttsBarSync() {
+  $("#tts-play").textContent = tts.paused ? "▶" : "⏸";
+  $("#tts-speed").textContent = `${ttsRate()}×`;
+  const left = tts.sleepUntil ? Math.max(0, Math.ceil((tts.sleepUntil - Date.now()) / 60000)) : 0;
+  $("#tts-sleep").textContent = tts.sleepChapter ? "⏾ Chapter" : left ? `⏾ ${left} min` : "⏾ Off";
+}
+setInterval(() => tts.on && tts.sleepUntil && ttsBarSync(), 30000);
+
+$("#reader-tts").addEventListener("click", () => {
+  $("#more-sheet").close();
+  tts.on ? ttsStop() : ttsStart();
+});
+$("#tts-close").addEventListener("click", () => ttsStop());
+$("#tts-play").addEventListener("click", ttsPause);
+$("#tts-back").addEventListener("click", () => {
+  if (!tts.on) return;
+  // Back to the start of the previous paragraph (not just sentence).
+  let i = tts.pos;
+  const el = tts.chunks[i]?.el;
+  while (i > 0 && tts.chunks[i - 1].el === el) i--;
+  if (i > 0) {
+    const prevEl = tts.chunks[i - 1].el;
+    i -= 1;
+    while (i > 0 && tts.chunks[i - 1].el === prevEl) i--;
+  }
+  tts.paused = false;
+  ttsRestartAt(i);
+  ttsBarSync();
+});
+$("#tts-fwd").addEventListener("click", () => {
+  if (!tts.on) return;
+  let i = tts.pos;
+  const el = tts.chunks[i]?.el;
+  while (i < tts.chunks.length && tts.chunks[i].el === el) i++;
+  tts.paused = false;
+  if (i >= tts.chunks.length) {
+    ttsNextSection();
+  } else ttsRestartAt(i);
+  ttsBarSync();
+});
+$("#tts-speed").addEventListener("click", () => {
+  const i = TTS_SPEEDS.indexOf(ttsRate());
+  setPref("ttsRate", String(TTS_SPEEDS[(i + 1) % TTS_SPEEDS.length]));
+  ttsBarSync();
+  if (tts.on && !tts.paused) ttsRestartAt(tts.pos);
+});
+$("#tts-sleep").addEventListener("click", () => {
+  const cur = tts.sleepChapter ? -1 : Number(pref("ttsSleep", "0"));
+  const next = TTS_SLEEP[(TTS_SLEEP.indexOf(cur) + 1) % TTS_SLEEP.length];
+  setPref("ttsSleep", String(next));
+  tts.sleepChapter = next === -1;
+  tts.sleepUntil = next > 0 ? Date.now() + next * 60000 : 0;
+  ttsBarSync();
+});
+$("#tts-voice-btn").addEventListener("click", () => {
+  const list = $("#tts-voices");
+  list.textContent = "";
+  let voices = [];
+  if (tts.engine === "android") {
+    try {
+      voices = JSON.parse(window.FicShelfAndroid.ttsVoices() || "[]");
+    } catch {
+      voices = [];
+    }
+  } else if (tts.engine === "web") {
+    voices = speechSynthesis.getVoices().map((v) => ({ id: v.voiceURI, name: `${v.name} (${v.lang})` }));
+  }
+  const cur = pref("ttsVoice", "");
+  for (const v of [{ id: "", name: "System default" }, ...voices]) {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.textContent = v.name;
+    b.classList.toggle("active", v.id === cur);
+    b.addEventListener("click", () => {
+      setPref("ttsVoice", v.id);
+      $("#tts-voice-sheet").close();
+      if (tts.on && !tts.paused) ttsRestartAt(tts.pos);
+    });
+    li.appendChild(b);
+    list.appendChild(li);
+  }
+  $("#tts-voice-note").hidden = tts.engine === "spd" ? false : voices.length > 0;
+  if (tts.engine === "spd") {
+    const li = document.createElement("li");
+    li.className = "muted small";
+    li.textContent = "Voices come from speech-dispatcher's settings (spd-conf).";
+    list.appendChild(li);
+  }
+  $("#tts-voice-sheet").showModal();
+});
+$("#tts-voice-done").addEventListener("click", () => $("#tts-voice-sheet").close());
 
 // ------------------------------------------------------------ display
 //
@@ -2858,6 +3507,14 @@ $("#lib-incognito").addEventListener("click", () => {
 function tapAction(fx, fy, rtl = false) {
   const inMiddle = fx > 0.3 && fx < 0.7 && fy > 0.3 && fy < 0.7;
   const scheme = pref("tapZones", "sides");
+  if (scheme === "custom") {
+    const x = rtl ? 1 - fx : fx;
+    const col = Math.min(2, Math.max(0, Math.floor(x * 3)));
+    const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
+    const act = tapMap()[row * 3 + col] || "none";
+    // In a right-to-left comic "next" on the left means forward still.
+    return act;
+  }
   if (scheme === "halves") {
     if (inMiddle) return "menu";
     return fy < 0.5 ? "prev" : "next";
@@ -2888,11 +3545,13 @@ function touchTurner(pageX, pageY = () => 0.5) {
       start = null;
       if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
         dx < 0 ? state.reader.next?.() : state.reader.prev?.();
+      } else if (
+        Math.abs(dy) > 70 && Math.abs(dy) > Math.abs(dx) * 1.5 &&
+        !(state.reader.kind === "epub" && pref("flow", "pages") === "scroll")
+      ) {
+        runTapAction(pref(dy < 0 ? "swipeUp" : "swipeDown", "none"));
       } else if (quick && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-        const act = tapAction(pageX(t), pageY(t));
-        if (act === "prev") state.reader.prev?.();
-        else if (act === "next") state.reader.next?.();
-        else $("#view-reader").classList.toggle("show-chrome");
+        runTapAction(tapAction(pageX(t), pageY(t)));
       }
     },
   };
@@ -2998,8 +3657,42 @@ const EVEN_MARGINS_CSS = `
 /// The reader's text-layout choices as CSS for inside an EPUB page:
 /// margins, line spacing, paragraph spacing, alignment and hyphenation.
 /// Each "Book's" choice adds nothing, leaving the publisher's style.
+/// Her own fonts: the list, and the selected one's data once loaded.
+const userFonts = { list: [], data: new Map() };
+const USER_FAMILY = "FicShelf Own Font";
+
+function faceFamily(face) {
+  if (face?.startsWith("user:")) return `"${USER_FAMILY}", serif`;
+  return FACES[face] ?? "";
+}
+
+function userFontCss() {
+  const face = pref("fontFace", "book");
+  if (!face.startsWith("user:")) return "";
+  const url = userFonts.data.get(face.slice(5));
+  if (!url) {
+    loadUserFont(face.slice(5));
+    return "";
+  }
+  return `@font-face { font-family: "${USER_FAMILY}"; src: url("${url}"); font-display: swap; }
+body, p, div, span, li, blockquote, h1, h2, h3, h4, h5, h6 { font-family: "${USER_FAMILY}", serif !important; }`;
+}
+
+async function loadUserFont(file) {
+  if (userFonts.data.has(file) || userFonts.loading === file) return;
+  userFonts.loading = file;
+  try {
+    userFonts.data.set(file, await invoke("font_data", { file }));
+    readerRestyle?.();
+  } catch (e) {
+    logError("font", e);
+  } finally {
+    userFonts.loading = null;
+  }
+}
+
 function textLayoutCss() {
-  const css = [];
+  const css = [userFontCss()];
   if (pref("margins", "even") === "even") css.push(EVEN_MARGINS_CSS);
   const lines = pref("lines", "book");
   if (lines !== "book") {
@@ -3016,6 +3709,9 @@ function textLayoutCss() {
   if (pref("hyphens", "off") === "on") {
     css.push(`html, body, p { -webkit-hyphens: auto !important; hyphens: auto !important; }`);
   }
+  const own = pref("customCss", "").trim();
+  // Her CSS cannot close the style element or load anything from outside.
+  if (own) css.push(own.replace(/<\/?style/gi, "").replace(/@import[^;]*;?/gi, ""));
   return css.join("\n");
 }
 
@@ -3040,7 +3736,7 @@ function fontSize() {
 
 function applyPageStyle(rendition) {
   rendition.themes.fontSize(`${fontSize()}%`);
-  rendition.themes.font(FACES[pref("fontFace", "book")] ?? "");
+  rendition.themes.font(faceFamily(pref("fontFace", "book")));
   for (const c of rendition.getContents()) applyMargins(c);
 }
 
@@ -3110,9 +3806,78 @@ document.querySelectorAll("#select-bar .swatch").forEach((b) =>
 $("#select-note").addEventListener("click", () => addHighlight("yellow", true));
 $("#select-cancel").addEventListener("click", clearSelection);
 $("#select-lookup").addEventListener("click", () => {
-  const word = (notes.selection?.text || "").trim().split(/\s+/).slice(0, 4).join(" ");
+  const text = (notes.selection?.text || "").trim();
   clearSelection();
-  if (word) call("look_up", { word }).catch(() => {});
+  if (text) openLookup(text);
+});
+
+/// The look-up pop-up: Wiktionary's meanings and Wikipedia's summary for a
+/// word or a name, with Translate for longer passages.
+let lookupText = "";
+async function openLookup(text) {
+  lookupText = text;
+  const short = text.split(/\s+/).slice(0, 4).join(" ");
+  const body = $("#lookup-body");
+  $("#lookup-word").textContent = short.length < text.length ? `${short}…` : short;
+  body.innerHTML = "<p class='muted'>Looking it up…</p>";
+  $("#lookup-wikt").hidden = text.split(/\s+/).length > 4;
+  if (!$("#lookup-sheet").open) $("#lookup-sheet").showModal();
+  if (text.split(/\s+/).length > 4) {
+    body.innerHTML = "<p class='muted'>That is more than a few words: use Translate, or select a single word or name to look it up.</p>";
+    return;
+  }
+  let found;
+  try {
+    found = await invoke("define", { text: short });
+  } catch (e) {
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "error";
+    p.textContent = `Could not look it up: ${e}`;
+    body.appendChild(p);
+    return;
+  }
+  if (lookupText !== text) return;
+  body.textContent = "";
+  for (const m of found.meanings) {
+    const h = document.createElement("p");
+    h.className = "lookup-part";
+    h.textContent = m.part;
+    const ol = document.createElement("ol");
+    for (const d of m.definitions) {
+      const li = document.createElement("li");
+      li.textContent = d;
+      ol.appendChild(li);
+    }
+    body.append(h, ol);
+  }
+  if (found.wiki_extract) {
+    const h = document.createElement("p");
+    h.className = "lookup-part";
+    h.textContent = `Wikipedia: ${found.wiki_title}`;
+    const p = document.createElement("p");
+    p.textContent = found.wiki_extract;
+    body.append(h, p);
+    if (found.wiki_url) {
+      const a = document.createElement("button");
+      a.textContent = "Read on Wikipedia";
+      a.addEventListener("click", () => invoke("open_link", { url: found.wiki_url }).catch(() => {}));
+      body.appendChild(a);
+    }
+  }
+  if (!found.meanings.length && !found.wiki_extract) {
+    body.innerHTML = "<p class='muted'>Nothing found. Names from a story usually aren't in a dictionary.</p>";
+  }
+  body.insertAdjacentHTML("beforeend", "<p class='muted small'>From Wiktionary and Wikipedia (CC BY-SA).</p>");
+}
+$("#lookup-done").addEventListener("click", () => $("#lookup-sheet").close());
+$("#lookup-wikt").addEventListener("click", () =>
+  call("look_up", { word: lookupText.split(/\s+/).slice(0, 4).join(" ") }).catch(() => {}),
+);
+$("#lookup-translate").addEventListener("click", () => {
+  const lang = (navigator.language || "en").split("-")[0];
+  const url = `https://translate.google.com/?sl=auto&tl=${encodeURIComponent(lang)}&op=translate&text=${encodeURIComponent(lookupText.slice(0, 1500))}`;
+  invoke("open_link", { url }).catch((e) => toast(String(e), true));
 });
 
 function openNoteSheet(a) {
@@ -3301,6 +4066,78 @@ $("#reader-bookmark").addEventListener("click", async () => {
 
 $("#notes-done").addEventListener("click", () => $("#notes-sheet").close());
 
+/// A book's highlights, notes and bookmarks as Markdown, in reading order,
+/// grouped under their chapters.
+function notesMarkdown(book, list) {
+  const cmp = new ePub.CFI();
+  const items = [...list].sort((a, b) => {
+    const ka = notesOrderKey(a);
+    const kb = notesOrderKey(b);
+    if (ka != null && kb != null) return ka - kb;
+    try {
+      return cmp.compare(a.cfi, b.cfi);
+    } catch {
+      return a.created_at - b.created_at;
+    }
+  });
+  const chapters = state.reader?.chapterList?.() || [];
+  const chapterOf = (cfi) => {
+    let label = "";
+    for (const c of chapters) {
+      try {
+        if (cmp.compare(c.cfi, cfi) <= 0) label = c.label;
+      } catch {
+        /* skip */
+      }
+    }
+    return label.trim();
+  };
+  const lines = [`# ${book.title}`, ""];
+  if (book.author) lines.push(`*${book.author}*`, "");
+  lines.push(`Highlights and notes exported from FicShelf on ${new Date().toLocaleDateString()}.`, "");
+  let lastChapter = null;
+  for (const a of items) {
+    const page = a.cfi.startsWith("page:") ? `Page ${a.cfi.slice(5)}` : "";
+    const ch = page ? "" : chapterOf(a.cfi);
+    if (ch && ch !== lastChapter) {
+      lines.push(`## ${ch}`, "");
+      lastChapter = ch;
+    }
+    const when = new Date(a.created_at * 1000).toLocaleDateString();
+    if (a.color === "bookmark") {
+      lines.push(`- 🔖 Bookmark${page ? ` · ${page}` : ""} · ${when}${a.excerpt ? `: ${a.excerpt.replace(/\s+/g, " ").slice(0, 200)}` : ""}`, "");
+      continue;
+    }
+    lines.push(...a.excerpt.trim().split(/\n+/).map((l) => `> ${l}`));
+    lines.push("", `— ${[page, a.color, when].filter(Boolean).join(" · ")}`, "");
+    if (a.note) lines.push(`**Note:** ${a.note.trim()}`, "");
+  }
+  return lines.join("\n");
+}
+
+$("#notes-export").addEventListener("click", async () => {
+  const book = notes.book || state.reader?.book;
+  if (!book) return;
+  if (!notes.list.length) {
+    toast("Nothing to export yet.");
+    return;
+  }
+  try {
+    const path = await invoke("save_export", { name: `${book.title} - notes`, content: notesMarkdown(book, notes.list) });
+    const bridge = window.FicShelfAndroid;
+    if (bridge?.openExternally) {
+      // Lets her send it to Notes, Drive, email, Obsidian…
+      if (!bridge.openExternally(path, "text/markdown")) toast(`Saved to ${path}`);
+    } else {
+      toast(`Saved to ${path}`);
+      invoke("reveal_file", { path }).catch(() => {});
+    }
+  } catch (e) {
+    logError("export notes", e);
+    toast(`Could not export: ${e}`, true);
+  }
+});
+
 // ---------------------------------------------------------------- chapters
 
 /// The book's table of contents, flattened with each entry's depth.
@@ -3365,9 +4202,10 @@ $("#toc-done").addEventListener("click", () => $("#toc-sheet").close());
 function syncFontSheet() {
   $("#font-size-label").textContent = `${fontSize()}%`;
   const face = pref("fontFace", "book");
-  document.querySelectorAll("#font-face button").forEach((b) =>
+  document.querySelectorAll("#font-face button, #font-user button").forEach((b) =>
     b.classList.toggle("active", b.dataset.face === face),
   );
+  $("#font-css").value = pref("customCss", "");
   const margins = pref("margins", "even");
   document.querySelectorAll("#font-margins button").forEach((b) =>
     b.classList.toggle("active", b.dataset.margins === margins),
@@ -3427,6 +4265,7 @@ function stepFont(dir) {
   const i = FONT_SIZES.indexOf(fontSize());
   const next = FONT_SIZES[Math.min(Math.max(i + dir, 0), FONT_SIZES.length - 1)];
   setPref("fontSize", String(next));
+  applyRuler();
   syncFontSheet();
   readerRestyle?.();
 }
@@ -3445,6 +4284,73 @@ document.querySelectorAll("#font-face button").forEach((b) =>
   }),
 );
 $("#font-done").addEventListener("click", () => $("#font-sheet").close());
+
+async function renderUserFonts() {
+  try {
+    userFonts.list = await invoke("list_fonts");
+  } catch {
+    userFonts.list = [];
+  }
+  const box = $("#font-user");
+  box.textContent = "";
+  for (const f of userFonts.list) {
+    const b = document.createElement("button");
+    b.dataset.face = `user:${f.file}`;
+    b.setAttribute("role", "radio");
+    b.textContent = f.name;
+    b.title = "Tap to use; press and hold to remove";
+    b.addEventListener("click", () => {
+      setPref("fontFace", b.dataset.face);
+      loadUserFont(f.file);
+      syncFontSheet();
+      readerRestyle?.();
+    });
+    b.addEventListener("contextmenu", async (e) => {
+      e.preventDefault();
+      if (!(await confirmAsk(`Remove the font “${f.name}” from FicShelf?`))) return;
+      await call("remove_font", { file: f.file });
+      if (pref("fontFace", "book") === b.dataset.face) setPref("fontFace", "book");
+      userFonts.data.delete(f.file);
+      await renderUserFonts();
+      readerRestyle?.();
+    });
+    box.appendChild(b);
+  }
+  // A font that was removed elsewhere falls back to the book's own.
+  const face = pref("fontFace", "book");
+  if (face.startsWith("user:") && !userFonts.list.some((f) => `user:${f.file}` === face)) setPref("fontFace", "book");
+  syncFontSheet();
+}
+renderUserFonts();
+
+$("#font-add").addEventListener("click", () => $("#font-file").click());
+$("#font-file").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    const f = await invoke("add_font", { name: file.name, data: btoa(bin) });
+    setPref("fontFace", `user:${f.file}`);
+    userFonts.data.delete(f.file);
+    await renderUserFonts();
+    await loadUserFont(f.file);
+    toast(`Added ${f.name}.`);
+  } catch (err) {
+    toast(String(err), true);
+  }
+});
+
+let cssTimer = 0;
+$("#font-css").addEventListener("input", (e) => {
+  clearTimeout(cssTimer);
+  cssTimer = setTimeout(() => {
+    setPref("customCss", e.target.value);
+    readerRestyle?.();
+  }, 400);
+});
 
 // A tap on the dimmed area around any sheet closes it.
 document.querySelectorAll("dialog.sheet").forEach((d) =>
@@ -3553,6 +4459,7 @@ async function openEpub(book) {
     applyMargins(contents);
     contents.window?.addEventListener("wheel", wheelTurn, { passive: true });
     contents.document?.addEventListener("click", (e) => webLinkClicked(e, book), true);
+    contents.document?.addEventListener("click", (e) => footnoteClicked(e, contents), true);
     // A podfic's player inside a work: on a phone, hand it to the native
     // player so it keeps going with the screen off.
     if (nativeAudio) {
@@ -3622,6 +4529,7 @@ async function openEpub(book) {
     readerRestyle = () => {
       try {
         applyPageStyle(rendition);
+        if (side.rendition) applyPageStyle(side.rendition);
       } catch (e) {
         toast(`Could not apply that style: ${e?.message || e}`, true);
       }
@@ -3634,7 +4542,8 @@ async function openEpub(book) {
   // rather than the page. screenX is used because the iframe's own
   // coordinates span every page of the chapter, not just the visible one.
   const turner = touchTurner(
-    (t) => t.screenX / window.screen.width,
+    // With a second book open the main one has the left half of the screen.
+    (t) => Math.min(1, (t.screenX / window.screen.width) * ($("#reader-stage").classList.contains("split") ? 2 : 1)),
     (t) => t.screenY / window.screen.height,
   );
   rendition.on("touchstart", (e) => turner.start(e));
@@ -3642,6 +4551,8 @@ async function openEpub(book) {
     // Lifting a finger after selecting text must not also turn the page.
     const sel = e.view?.getSelection?.();
     if (sel && !sel.isCollapsed) return;
+    // A tap on a link (a footnote mark, a chapter link) is for the link.
+    if (e.target?.closest?.("a[href]")) return;
     turner.end(e);
   });
 
@@ -3787,6 +4698,7 @@ async function openEpub(book) {
     mark: () => here,
     restore: (cfi) => cfi && rendition.display(cfi),
     chapterLabel: () => chapters[chapterIndex()]?.label || "",
+    chapterList: () => chapters,
     chapterAt: (href) => chapters.findIndex((c) => c.href === href),
     currentChapterHref: () => chapters[chapterIndex()]?.href || null,
     chapter: (step) => {
@@ -4081,8 +4993,58 @@ async function openPdf(book) {
   const doc = await pdfjs.getDocument(convertFileSrc(book.path)).promise;
   let page = Math.min(Math.max(parseInt(book.position || "1", 10) || 1, 1), doc.numPages);
 
+  const textBox = $("#pdf-text");
+  const reflow = () => pref("pdfReflow", "") === "1";
+
+  const renderText = async (p) => {
+    const content = await p.getTextContent();
+    const paras = pdfParagraphs(content.items);
+    textBox.textContent = "";
+    const head = document.createElement("p");
+    head.className = "pdf-text-page";
+    head.textContent = `Page ${page} of ${doc.numPages}`;
+    textBox.appendChild(head);
+    if (!paras.length) {
+      const none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "This page has no text to wrap (it may be a scanned picture). Switch Text view off in ⋮ to see it.";
+      textBox.appendChild(none);
+    }
+    for (const para of paras) {
+      const el = document.createElement(para.heading ? "h4" : "p");
+      el.textContent = para.text;
+      textBox.appendChild(el);
+    }
+    const lines = pref("lines", "book");
+    textBox.style.setProperty("--pdf-lh", lines === "book" ? "1.6" : String(Number(lines) || 1.6));
+    textBox.style.setProperty("--pdf-fs", `${(fontSize() / 100) * 1.05}rem`);
+    textBox.style.setProperty("--pdf-ff", faceFamily(pref("fontFace", "book")) || "Georgia, serif");
+    if (userFonts.data.size && pref("fontFace", "book").startsWith("user:")) {
+      // The app's own page can use her font through a FontFace.
+      const url = userFonts.data.get(pref("fontFace", "book").slice(5));
+      if (url && !document.fonts.check(`12px "${USER_FAMILY}"`)) {
+        try {
+          const f = new FontFace(USER_FAMILY, `url(${url})`);
+          document.fonts.add(await f.load());
+        } catch {
+          /* her font could not load; the fallback stands */
+        }
+      }
+    }
+    textBox.scrollTop = 0;
+  };
+
   const render = async () => {
     const p = await doc.getPage(page);
+    canvas.hidden = reflow();
+    textBox.hidden = !reflow();
+    if (reflow()) {
+      await renderText(p);
+      $("#reader-progress").textContent = `${page} / ${doc.numPages}`;
+      showPageNumber(page, doc.numPages);
+      saveWhere(book, page);
+      return;
+    }
     // Fit the width of the stage, within reason, and respect high-DPI screens.
     const stageWidth = Math.max($("#reader-stage").clientWidth - 28, 320);
     const base = p.getViewport({ scale: 1 });
@@ -4124,18 +5086,28 @@ async function openPdf(book) {
     book,
     kind: "pdf",
     next: () => {
+      // In Text view a long page scrolls before the next one comes.
+      if (reflow() && textBox.scrollTop + textBox.clientHeight < textBox.scrollHeight - 8) {
+        textBox.scrollBy({ top: textBox.clientHeight * 0.9, behavior: "smooth" });
+        return;
+      }
       if (page < doc.numPages) {
         page += 1;
-        render().then(() => playTurn(canvas, 1));
+        render().then(() => playTurn(reflow() ? textBox : canvas, 1));
       }
     },
     prev: () => {
+      if (reflow() && textBox.scrollTop > 8) {
+        textBox.scrollBy({ top: -textBox.clientHeight * 0.9, behavior: "smooth" });
+        return;
+      }
       if (page > 1) {
         page -= 1;
-        render().then(() => playTurn(canvas, -1));
+        render().then(() => playTurn(reflow() ? textBox : canvas, -1));
       }
     },
     resize: () => render(),
+    restyle: () => reflow() && render(),
     total: () => doc.numPages,
     current: () => page,
     mark: () => page,
@@ -4147,9 +5119,75 @@ async function openPdf(book) {
       page = Math.min(Math.max(Math.round(n), 1), doc.numPages);
       render();
     },
-    cleanup: () => doc.destroy(),
+    cleanup: () => {
+      textBox.hidden = true;
+      textBox.textContent = "";
+      doc.destroy();
+    },
   };
+  readerRestyle = () => state.reader?.restyle?.();
 }
+
+/// A PDF page's text items, rejoined into paragraphs: lines are gathered by
+/// their height on the page, a bigger gap or a change of size starts a new
+/// paragraph, and words broken with a hyphen at a line's end are mended.
+function pdfParagraphs(items) {
+  const lines = [];
+  for (const it of items) {
+    if (!it.str && !it.hasEOL) continue;
+    const y = it.transform[5];
+    const size = Math.hypot(it.transform[2], it.transform[3]) || it.height || 10;
+    let line = lines[lines.length - 1];
+    if (!line || Math.abs(line.y - y) > size * 0.5) {
+      line = { y, size, text: "" };
+      lines.push(line);
+    }
+    line.text += it.str;
+    line.size = Math.max(line.size, size);
+    if (it.hasEOL) line.eol = true;
+  }
+  const clean = lines.map((l) => ({ ...l, text: l.text.replace(/\s+/g, " ").trim() })).filter((l) => l.text);
+  if (!clean.length) return [];
+  const gaps = [];
+  for (let i = 1; i < clean.length; i++) gaps.push(Math.abs(clean[i - 1].y - clean[i].y));
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const usual = sorted[Math.floor(sorted.length / 2)] || clean[0].size * 1.2;
+  const sizes = clean.map((l) => l.size).sort((a, b) => a - b);
+  const body = sizes[Math.floor(sizes.length / 2)] || 10;
+  const out = [];
+  let cur = null;
+  clean.forEach((l, i) => {
+    const gap = i ? Math.abs(clean[i - 1].y - l.y) : 0;
+    const heading = l.size > body * 1.25;
+    const fresh = !cur || gap > usual * 1.45 || heading !== cur.heading || (cur.heading && gap > usual);
+    // Page numbers and running heads alone on a line are dropped.
+    if (/^\d{1,4}$/.test(l.text) && (i === 0 || i === clean.length - 1)) return;
+    if (fresh) {
+      cur = { text: l.text, heading };
+      out.push(cur);
+    } else if (/[A-Za-z]-$/.test(cur.text) && /^[a-z]/.test(l.text)) {
+      cur.text = cur.text.slice(0, -1) + l.text;
+    } else {
+      cur.text += ` ${l.text}`;
+    }
+  });
+  return out;
+}
+
+$("#reader-reflow").addEventListener("click", () => {
+  $("#more-sheet").close();
+  setPref("pdfReflow", pref("pdfReflow", "") === "1" ? "" : "1");
+  state.reader?.goTo?.(state.reader.current());
+});
+$("#reader-more").addEventListener("click", () => {
+  const pdf = state.reader?.kind === "pdf";
+  $("#reader-reflow").hidden = !pdf;
+  $("#reader-reflow").textContent =
+    pref("pdfReflow", "") === "1" ? "📄  Page view: the PDF as printed" : "📄  Text view: words wrap to fit the screen";
+  $("#reader-side").textContent = side.book ? "📖  Close the second book" : "📖  A second book beside this one";
+  $("#reader-tts").textContent = tts.on ? "🔊  Stop reading aloud" : "🔊  Read aloud";
+  $("#reader-tts").hidden = state.reader?.kind !== "epub";
+});
 
 // ----------------------------------------------------------------- comics
 //
@@ -4581,7 +5619,9 @@ async function openCbz(book, pages, rtlHint) {
     const fy = (e.clientY - r.top) / r.height;
     const act = tapAction(fx, fy, rtl);
     if (scale === 1 && act !== "menu") {
-      act === "next" ? next() : prev();
+      if (act === "next") next();
+      else if (act === "prev") prev();
+      else runTapAction(act);
       lastTap = null;
       return;
     }
@@ -5869,6 +6909,78 @@ const AUDIO_LINK = /\.(mp3|m4a|m4b|aac|ogg|oga|opus|flac|wav)(\?|#|$)/i;
 /// A tap on a web link inside a book. A link straight to an audio file (a
 /// podfic's "download here") can be saved into the library; any other web
 /// link opens in the browser. Links within the book are left to epub.js.
+// ----------------------------------------------------------- footnotes
+//
+// Tapping a note mark (¹, [3], *) shows the note in a pop-up instead of
+// jumping away to it; "Go to note" still jumps.
+
+const NOTE_MARK = /^\s*[\[(]?\s*(\d{1,4}|[ivxlc]{1,6}|[a-z]|[*†‡§¶#]+)\s*[\])]?\s*$/i;
+
+function isNoteLink(a) {
+  const type = `${a.getAttribute("epub:type") || ""} ${a.getAttributeNS?.("http://www.idpf.org/2007/ops", "type") || ""} ${a.getAttribute("role") || ""}`;
+  if (/noteref|doc-noteref/.test(type)) return true;
+  const href = a.getAttribute("href") || "";
+  if (!href.includes("#") || /^[a-z]+:/i.test(href)) return false;
+  return NOTE_MARK.test(a.textContent || "") && (a.closest("sup") || /^\s*[\[(]?\s*[\d*†‡]/.test(a.textContent || ""));
+}
+
+/// The note an id points at: its aside, list item or paragraph, without the
+/// back-link.
+function noteText(target) {
+  if (!target) return "";
+  const box =
+    target.closest?.("aside, [epub\\:type~='footnote'], [epub\\:type~='endnote'], [role='doc-footnote'], [role='doc-endnote'], li, dd") ||
+    (target.matches?.("p, div, section") ? target : target.closest?.("p, div")) ||
+    target;
+  const clone = box.cloneNode(true);
+  for (const back of clone.querySelectorAll("a[href*='#']")) {
+    if (NOTE_MARK.test(back.textContent || "") || /back|return|↩|↑/i.test(back.textContent || "")) back.remove();
+  }
+  return (clone.innerText || clone.textContent || "").replace(/\s+\n/g, "\n").trim();
+}
+
+let footnoteTarget = null;
+async function footnoteClicked(e, contents) {
+  const a = e.target.closest?.("a[href]");
+  if (!a || !isNoteLink(a)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const href = a.getAttribute("href");
+  const [file, frag] = href.split("#");
+  let text = "";
+  let target = null;
+  try {
+    const section = notes.epub.spine.get(contents.sectionIndex);
+    let doc = contents.document;
+    let fullHref = section.href;
+    if (file) {
+      fullHref = new URL(file, `https://book.invalid/${section.href}`).pathname.slice(1);
+      const other = notes.epub.spine.get(fullHref);
+      if (other && other.index !== section.index) {
+        await other.load(notes.epub.load.bind(notes.epub));
+        doc = other.document;
+      }
+    }
+    target = doc?.getElementById(frag) || doc?.querySelector(`[name="${CSS.escape(frag)}"]`);
+    text = noteText(target);
+    footnoteTarget = `${fullHref}#${frag}`;
+  } catch {
+    footnoteTarget = null;
+  }
+  if (!text) {
+    // Not found as a note after all: follow the link as usual.
+    if (footnoteTarget) notes.rendition.display(footnoteTarget);
+    return;
+  }
+  $("#footnote-text").textContent = text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+  $("#footnote-sheet").showModal();
+}
+$("#footnote-done").addEventListener("click", () => $("#footnote-sheet").close());
+$("#footnote-go").addEventListener("click", () => {
+  $("#footnote-sheet").close();
+  if (footnoteTarget) notes.rendition?.display(footnoteTarget);
+});
+
 function webLinkClicked(e, book) {
   const a = e.target.closest?.("a[href]");
   if (!a) return;

@@ -126,6 +126,8 @@
         <div id="reader-stage" class="stage">
           <div id="epub-area" hidden></div>
           <canvas id="pdf-canvas" hidden></canvas>
+          <!-- A PDF page's text, rewrapped for the screen (Text view). -->
+          <article id="pdf-text" hidden></article>
           <!-- Comics: one or two pages, inside a layer that zooms and pans. -->
           <div id="cbz-view" hidden>
             <div id="cbz-zoom">
@@ -135,6 +137,29 @@
           </div>
           <!-- Comics as one long strip (webtoons): pages stacked, scrolled. -->
           <div id="cbz-strip" hidden></div>
+          <!-- Read aloud: the controls, over the bottom of the page. -->
+          <div id="tts-bar" hidden>
+            <button id="tts-back" class="icon" title="Previous paragraph" aria-label="Previous paragraph">⏮</button>
+            <button id="tts-play" class="icon primary" title="Pause" aria-label="Pause">⏸</button>
+            <button id="tts-fwd" class="icon" title="Next paragraph" aria-label="Next paragraph">⏭</button>
+            <button id="tts-speed" title="Speed">1×</button>
+            <button id="tts-sleep" title="Sleep timer">⏾ Off</button>
+            <button id="tts-voice-btn" title="Voice">Voice</button>
+            <button id="tts-close" class="icon" title="Stop reading aloud" aria-label="Stop reading aloud">✕</button>
+          </div>
+          <!-- A second book, side by side (EPUB and Kindle books). -->
+          <div id="side-pane" hidden>
+            <div class="side-bar">
+              <button id="side-prev" class="icon" title="Previous page" aria-label="Previous page">‹</button>
+              <span id="side-title" class="side-title"></span>
+              <span id="side-where" class="muted small"></span>
+              <button id="side-next" class="icon" title="Next page" aria-label="Next page">›</button>
+              <button id="side-close" class="icon" title="Close this book" aria-label="Close this book">✕</button>
+            </div>
+            <div id="side-area"></div>
+          </div>
+          <!-- Reading ruler: a clear band over the line being read. -->
+          <div id="reader-ruler" hidden><span class="ruler-grip" title="Drag to move the ruler" aria-label="Drag to move the ruler">⇕</span></div>
           <!-- Dims the page for the Brightness setting (all formats). -->
           <div id="reader-dim" aria-hidden="true"></div>
           <p id="reader-error" class="error" hidden></p>
@@ -389,6 +414,8 @@
             <button data-turn-choice="slide" role="radio">Slide</button>
             <button data-turn-choice="shift" role="radio">Shift</button>
             <button data-turn-choice="fade" role="radio">Fade</button>
+            <button data-turn-choice="flip" role="radio">Flip</button>
+            <button data-turn-choice="cover" role="radio">Cover</button>
             <button data-turn-choice="none" role="radio">None</button>
           </div>
           <label>Animations</label>
@@ -445,6 +472,13 @@
             <button data-zones="sides" role="radio">Left / right</button>
             <button data-zones="halves" role="radio">Top / bottom</button>
             <button data-zones="forward" role="radio">Mostly forward</button>
+            <button data-zones="custom" role="radio">Your own</button>
+          </div>
+          <div id="tapmap" class="tapmap" hidden>
+            <p class="muted small">What a tap does in each part of the page (EPUB and PDF; comics use the left, middle and right columns):</p>
+            <div id="tapmap-grid" class="tapmap-grid"></div>
+            <label class="slider-row">Swipe up <select id="swipe-up"></select></label>
+            <label class="slider-row">Swipe down <select id="swipe-down"></select></label>
           </div>
           <p class="muted">
             Left / right: the left side goes back, the right side forward.
@@ -831,6 +865,11 @@
         <button data-face="serif" role="radio">Serif</button>
         <button data-face="sans" role="radio">Sans</button>
       </div>
+      <div class="tabs" role="radiogroup" id="font-user"></div>
+      <div class="row">
+        <button id="font-add">Add a font…</button>
+        <input id="font-file" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden />
+      </div>
       <p class="muted small sheet-label">Margins</p>
       <div class="tabs" role="radiogroup" id="font-margins">
         <button data-margins="even" role="radio">Even</button>
@@ -865,6 +904,11 @@
         <button data-flow="pages" role="radio">Pages</button>
         <button data-flow="scroll" role="radio">Scroll</button>
       </div>
+      <details class="custom-css">
+        <summary>Your own CSS</summary>
+        <textarea id="font-css" rows="5" spellcheck="false" placeholder="p { text-indent: 1.5em; }&#10;em { color: #b04; }"></textarea>
+        <p class="muted small">Applied to every book's pages, after FicShelf's own settings. Leave empty for none.</p>
+      </details>
       <p class="muted small">Light, Paper, Sepia and Dark are under Settings → Reading and appearance.</p>
       <div class="row"><button id="font-done" class="primary">Done</button></div>
     </dialog>
@@ -873,9 +917,49 @@
       <button id="reader-aa">Aa  Text size, font and margins</button>
       <button id="reader-notes">🔖  Bookmarks and notes</button>
       <button id="reader-comic">⚙  Reading direction and pages</button>
+      <button id="reader-tts">🔊  Read aloud</button>
+      <button id="reader-side">📖  A second book beside this one</button>
+      <button id="reader-reflow" hidden>📄  Text view: words wrap to fit the screen</button>
       <button id="reader-display">☀  Brightness, colour and auto-scroll</button>
       <button id="more-settings">Appearance and page turns…</button>
       <button id="more-close">Close</button>
+    </dialog>
+
+    <dialog id="footnote-sheet" class="sheet">
+      <h3>Note</h3>
+      <p id="footnote-text" class="footnote-text"></p>
+      <div class="row">
+        <button id="footnote-go">Go to note</button>
+        <button id="footnote-done" class="primary">Done</button>
+      </div>
+    </dialog>
+
+    <dialog id="lookup-sheet" class="sheet">
+      <h3 id="lookup-word"></h3>
+      <div id="lookup-body" class="lookup-body"></div>
+      <div class="row">
+        <button id="lookup-translate">Translate</button>
+        <button id="lookup-wikt">Wiktionary</button>
+        <button id="lookup-done" class="primary">Done</button>
+      </div>
+    </dialog>
+
+    <dialog id="side-picker" class="sheet">
+      <h3>Open beside this book</h3>
+      <input id="side-filter" type="search" placeholder="Find a book…" />
+      <ul id="side-list" class="pick-list"></ul>
+      <p class="muted small">EPUB and Kindle books can open beside another. Best on a wide screen, such as the Fold's inner screen or a computer.</p>
+      <div class="row"><button id="side-cancel">Cancel</button></div>
+    </dialog>
+
+    <dialog id="tts-voice-sheet" class="sheet">
+      <h3>Voice</h3>
+      <ul id="tts-voices" class="pick-list"></ul>
+      <p class="muted small" id="tts-voice-note">
+        More voices: on Android, Settings → General management → Text-to-speech;
+        on a computer, your system's speech settings.
+      </p>
+      <div class="row"><button id="tts-voice-done" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="search-sheet" class="sheet">
@@ -930,6 +1014,7 @@
       <label class="check"><input id="disp-gray" type="checkbox" /> Black and white</label>
       <label class="check"><input id="disp-crop" type="checkbox" /> Crop white borders on comic pages</label>
       <label class="check"><input id="disp-awake" type="checkbox" /> Keep the screen on while reading</label>
+      <label class="check"><input id="disp-ruler" type="checkbox" /> Reading ruler (drag its tab to move it)</label>
       <p class="muted small sheet-label">Auto-scroll</p>
       <label class="slider-row"><span id="disp-speed-label">Speed</span> <input id="disp-speed" type="range" min="1" max="10" step="1" /></label>
       <p class="muted small">Long strips and scrolled books glide down; pages turn by themselves. Tap anywhere to stop.</p>
@@ -950,7 +1035,10 @@
         Nothing yet. Tap 🔖 to bookmark a page. In a book, select some text to
         highlight it or add a note.
       </p>
-      <div class="row"><button id="notes-done" class="primary">Done</button></div>
+      <div class="row">
+        <button id="notes-export">Export…</button>
+        <button id="notes-done" class="primary">Done</button>
+      </div>
     </dialog>
 
     <dialog id="note-sheet" class="sheet">
