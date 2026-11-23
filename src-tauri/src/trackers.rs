@@ -168,7 +168,9 @@ pub struct Media {
 }
 
 async fn anilist(token: &str, query: &str, vars: Value) -> Result<Value> {
-    let mut r = client()?.post("https://graphql.anilist.co").json(&json!({ "query": query, "variables": vars }));
+    let mut r = client()?.post("https://graphql.anilist.co")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(json!({ "query": query, "variables": vars }).to_string());
     if !token.is_empty() {
         r = r.bearer_auth(token);
     }

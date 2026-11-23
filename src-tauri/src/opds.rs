@@ -42,7 +42,7 @@ fn client() -> Result<reqwest::Client> {
         .build()?)
 }
 
-fn request(s: &Server, url: &str) -> Result<reqwest::RequestBuilder> {
+fn request(s: &Server<'_>, url: &str) -> Result<reqwest::RequestBuilder> {
     let mut r = client()?.get(url).header(
         reqwest::header::ACCEPT,
         "application/atom+xml, application/opds+xml, application/xml;q=0.9, */*;q=0.5",
@@ -54,7 +54,7 @@ fn request(s: &Server, url: &str) -> Result<reqwest::RequestBuilder> {
 }
 
 /// Fetch a URL from the server, refusing to send its login anywhere else.
-pub async fn get(s: &Server, url: &str) -> Result<reqwest::Response> {
+pub async fn get(s: &Server<'_>, url: &str) -> Result<reqwest::Response> {
     let base = reqwest::Url::parse(s.url).context("the server address is not a web address")?;
     let target = reqwest::Url::parse(url).context("that link is not a web address")?;
     if target.host_str() != base.host_str() || target.port_or_known_default() != base.port_or_known_default() {
