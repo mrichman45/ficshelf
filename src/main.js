@@ -5444,6 +5444,7 @@ $("#sync-disconnect").addEventListener("click", async () => {
 // phone), so the other devices see where she stopped.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") runSync(true);
+  else if (!$("#sync-signin").hidden) invoke("sync_nudge").catch(() => {});
 });
 
 // ------------------------------------------------------------- settings

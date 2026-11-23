@@ -2,6 +2,12 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.2.4
+
+- **Connecting Google Drive works on phones.** FicShelf lost the sign-in while you approved it in the browser; it now keeps waiting, and checks as soon as you come back.
+- Settings shows only the group you opened, not the list of groups above it.
+- Sync problems are written to the error log, including automatic syncs.
+
 ## 1.2.3
 
 - **Fixes Google Drive sync sign-in**, which Google refused with "invalid_scope". Sync now keeps its file, `ficshelf-sync.json`, in your Drive where you can see it, and FicShelf can still only see the files it made itself.

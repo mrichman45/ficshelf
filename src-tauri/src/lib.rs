@@ -1786,7 +1786,15 @@ async fn sync_finish_sign_in(state: State<'_, AppState>) -> Result<SyncStatus, S
         if state.sync.pending.lock().map_err(err)?.is_none() {
             return Err("Sign-in cancelled.".into());
         }
-        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        // Sleep in short steps, so coming back to the app (which pokes
+        // `nudge`) checks straight away.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+        while std::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if state.sync.nudge.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+        }
         match gdrive::poll_sign_in(&http, &code.device_code, wait).await.map_err(chain)? {
             gdrive::Poll::Wait(next) => wait = next.max(5),
             gdrive::Poll::Done { refresh, access, expires_in } => {
@@ -1800,6 +1808,12 @@ async fn sync_finish_sign_in(state: State<'_, AppState>) -> Result<SyncStatus, S
             }
         }
     }
+}
+
+/// The app came back to the front: check a pending sign-in now.
+#[tauri::command]
+fn sync_nudge(state: State<'_, AppState>) {
+    state.sync.nudge.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -2768,6 +2782,7 @@ pub fn run() {
             sync_begin_sign_in,
             sync_finish_sign_in,
             sync_cancel_sign_in,
+            sync_nudge,
             sync_now,
             sync_open_page,
             sync_sign_out,

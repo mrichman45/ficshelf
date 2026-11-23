@@ -94,9 +94,12 @@ pub async fn poll_sign_in(http: &reqwest::Client, device_code: &str, interval: u
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ])
         .send()
-        .await
-        .context("reaching Google")?;
-    let reply: TokenReply = read_json(resp).await?;
+        .await;
+    // While she approves in the browser, a phone often pauses FicShelf or
+    // drops its connections. A failed check is not a failed sign-in: ask
+    // again at the next interval.
+    let Ok(resp) = resp else { return Ok(Poll::Wait(interval)) };
+    let Ok(reply) = read_json::<TokenReply>(resp).await else { return Ok(Poll::Wait(interval)) };
     match reply.error.as_deref() {
         None => {
             let access = reply.access_token.ok_or_else(|| anyhow!("Google sent no access token"))?;

@@ -27,6 +27,8 @@ pub struct SyncState {
     access: Mutex<Option<(String, Instant)>>,
     /// One sync at a time.
     running: Mutex<()>,
+    /// Set when the app comes back to the front, to check a pending sign-in.
+    pub nudge: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Serialize, Default)]
