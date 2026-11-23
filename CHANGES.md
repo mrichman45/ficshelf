@@ -2,6 +2,10 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 1.1.8
+
+- The Library remembers **All books / Series**, and the series you had open, after switching apps or restarting.
+
 ## 1.1.7
 
 - **Removing several books** (Library ⋯ → Select books → Remove) removes them all at once and says how many went.

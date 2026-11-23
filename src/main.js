@@ -182,8 +182,10 @@ const state = {
   books: [],
   filter: "",
   sort: "added",
-  libView: "all", // "all" or "series"
-  openSeries: null, // the group key being looked at in the Series view
+  // Kept between visits: Android may restart the page when the app has
+  // been in the background, which used to drop her back to All books.
+  libView: pref("libView", "all") === "series" ? "series" : "all", // "all" or "series"
+  openSeries: pref("openSeries", "") || null, // the group key being looked at in the Series view
   reader: null, // { book, kind, cleanup, next, prev }
 };
 
@@ -461,6 +463,7 @@ function groups(books) {
   });
 }
 
+$$(".tabs button[data-libview]").forEach((b) => b.classList.toggle("active", b.dataset.libview === state.libView));
 $$(".tabs button[data-libview]").forEach((b) =>
   b.addEventListener("click", () => {
     state.libView = b.dataset.libview;
@@ -691,6 +694,8 @@ function syncLibLayout() {
 }
 
 function renderShelf() {
+  setPref("libView", state.libView);
+  setPref("openSeries", state.openSeries || "");
   const shelf = $("#shelf");
   shelf.textContent = "";
   syncLibLayout();
