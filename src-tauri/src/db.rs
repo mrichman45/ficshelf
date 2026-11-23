@@ -125,6 +125,19 @@ fn add_columns(conn: &Connection) -> Result<()> {
             path     TEXT PRIMARY KEY,
             added_at INTEGER NOT NULL
         );
+        -- Time spent reading, for History and Statistics. The title is kept
+        -- so a removed book still reads sensibly in the history.
+        CREATE TABLE IF NOT EXISTS reading_sessions (
+            id         INTEGER PRIMARY KEY,
+            book_id    INTEGER NOT NULL,
+            title      TEXT NOT NULL,
+            format     TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at   INTEGER NOT NULL,
+            seconds    INTEGER NOT NULL,
+            pages      INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS reading_sessions_when ON reading_sessions(ended_at);
         -- Files a folder check could not add, skipped until they change.
         CREATE TABLE IF NOT EXISTS scan_skips (
             path TEXT PRIMARY KEY,
@@ -141,6 +154,104 @@ pub fn set_path_format(conn: &Connection, id: i64, path: &str, format: &str) -> 
         params![id, path, format],
     )?;
     Ok(())
+}
+
+/// Add reading time to a book. A stretch that follows on within five
+/// minutes of the last one for the same book extends it, so a sitting with
+/// a few interruptions stays one entry in the history.
+pub fn record_session(conn: &Connection, book_id: i64, started: i64, ended: i64, seconds: i64, pages: i64) -> Result<()> {
+    if seconds <= 0 && pages <= 0 {
+        return Ok(());
+    }
+    let (title, format): (String, String) = conn
+        .query_row("SELECT title, format FROM books WHERE id = ?1", params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?
+        .unwrap_or_else(|| ("Removed book".into(), String::new()));
+    let last: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT id, ended_at FROM reading_sessions WHERE book_id = ?1 ORDER BY ended_at DESC LIMIT 1",
+            params![book_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match last {
+        Some((id, end)) if started - end <= 5 * 60 => {
+            conn.execute(
+                "UPDATE reading_sessions SET ended_at = MAX(ended_at, ?2), seconds = seconds + ?3, pages = pages + ?4, title = ?5 WHERE id = ?1",
+                params![id, ended, seconds.max(0), pages.max(0), title],
+            )?;
+        }
+        _ => {
+            conn.execute(
+                "INSERT INTO reading_sessions(book_id, title, format, started_at, ended_at, seconds, pages) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![book_id, title, format, started, ended, seconds.max(0), pages.max(0)],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct HistoryEntry {
+    pub id: i64,
+    pub book_id: i64,
+    pub title: String,
+    pub format: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub seconds: i64,
+    pub pages: i64,
+    /// Still in the library.
+    pub present: bool,
+}
+
+pub fn history(conn: &Connection, limit: i64) -> Result<Vec<HistoryEntry>> {
+    let mut st = conn.prepare(
+        "SELECT s.id, s.book_id, COALESCE(b.title, s.title), COALESCE(b.format, s.format), s.started_at, s.ended_at,
+                s.seconds, s.pages, b.id IS NOT NULL
+         FROM reading_sessions s LEFT JOIN books b ON b.id = s.book_id
+         ORDER BY s.ended_at DESC LIMIT ?1",
+    )?;
+    let rows = st.query_map(params![limit], |r| {
+        Ok(HistoryEntry {
+            id: r.get(0)?,
+            book_id: r.get(1)?,
+            title: r.get(2)?,
+            format: r.get(3)?,
+            started_at: r.get(4)?,
+            ended_at: r.get(5)?,
+            seconds: r.get(6)?,
+            pages: r.get(7)?,
+            present: r.get::<_, i64>(8)? != 0,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn forget_history(conn: &Connection, entry: Option<i64>) -> Result<()> {
+    match entry {
+        Some(id) => conn.execute("DELETE FROM reading_sessions WHERE id = ?1", params![id])?,
+        None => conn.execute("DELETE FROM reading_sessions", [])?,
+    };
+    Ok(())
+}
+
+/// Every session as (ended_at, seconds, pages, book_id, title), for the
+/// statistics, which are worked out in the front end in local time.
+pub fn all_sessions(conn: &Connection) -> Result<Vec<(i64, i64, i64, i64, String)>> {
+    let mut st = conn.prepare(
+        "SELECT s.ended_at, s.seconds, s.pages, s.book_id, COALESCE(b.title, s.title)
+         FROM reading_sessions s LEFT JOIN books b ON b.id = s.book_id ORDER BY s.ended_at",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// When each finished book was marked finished, for the statistics.
+pub fn finished_at(conn: &Connection) -> Result<Vec<i64>> {
+    let mut st = conn.prepare("SELECT COALESCE(marks_at, last_opened_at, 0) FROM books WHERE status = 'finished'")?;
+    let rows = st.query_map([], |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn watch_folder(conn: &Connection, path: &str) -> Result<()> {

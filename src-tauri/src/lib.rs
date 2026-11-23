@@ -948,6 +948,50 @@ async fn apply_lookup(
     db::get_book(&conn, id).map_err(chain)?.ok_or_else(|| "that book is not in the library".to_string())
 }
 
+// ---------------------------------------------------- history and stats
+
+#[tauri::command]
+fn record_session(
+    state: State<'_, AppState>,
+    book_id: i64,
+    started: i64,
+    ended: i64,
+    seconds: i64,
+    pages: i64,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::record_session(&conn, book_id, started, ended, seconds, pages).map_err(chain)
+}
+
+#[tauri::command]
+fn reading_history(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<db::HistoryEntry>, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::history(&conn, limit.unwrap_or(300).clamp(1, 5000)).map_err(chain)
+}
+
+/// Forget one history entry, or (with none given) all of it.
+#[tauri::command]
+fn forget_history(state: State<'_, AppState>, entry: Option<i64>) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(err)?;
+    db::forget_history(&conn, entry).map_err(chain)
+}
+
+#[derive(Serialize)]
+struct StatsData {
+    /// (ended_at, seconds, pages, book_id, title)
+    sessions: Vec<(i64, i64, i64, i64, String)>,
+    finished: Vec<i64>,
+}
+
+#[tauri::command]
+fn reading_stats(state: State<'_, AppState>) -> Result<StatsData, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    Ok(StatsData {
+        sessions: db::all_sessions(&conn).map_err(chain)?,
+        finished: db::finished_at(&conn).map_err(chain)?,
+    })
+}
+
 // ------------------------------------------------------ share over Wi-Fi
 
 struct SharedLibrary(tauri::AppHandle);
@@ -2299,6 +2343,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_books,
             open_link,
+            record_session,
+            reading_history,
+            forget_history,
+            reading_stats,
             forget_books,
             share_start,
             share_stop,

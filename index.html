@@ -11,9 +11,11 @@
       <button id="nav-menu" class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav-links">☰</button>
       <div class="brand">FicShelf</div>
       <span id="nav-current" class="nav-current">Library</span>
+      <span id="incognito-badge" class="incognito-badge" title="Incognito: not keeping history or syncing" hidden>🕶 Incognito</span>
       <div id="nav-links" class="nav-links">
         <button data-view="library" class="active">Library</button>
         <button data-view="search">Search AO3</button>
+        <button data-view="history">History</button>
         <button data-view="bookmarks">Bookmarks</button>
         <button data-view="updates">Updates <span id="update-badge" hidden>0</span></button>
         <button data-view="settings">Settings</button>
@@ -44,6 +46,7 @@
           <div class="tabs" role="tablist">
             <button data-libview="all" class="active" role="tab">All books</button>
             <button data-libview="series" role="tab">Series</button>
+            <span id="shelf-tabs" class="shelf-tabs"></span>
           </div>
           <input id="filter" type="search" placeholder="Filter… (try tag:comfort or rating:>=4)" />
           <select id="sort">
@@ -58,6 +61,10 @@
           <button id="btn-add-folder">Add folder…</button>
           <button id="btn-lib-more" class="icon" title="More library tools">⋯</button>
         </header>
+        <div id="continue-row" class="continue-row" hidden>
+          <h3>Continue reading</h3>
+          <div id="continue-list" class="continue-list"></div>
+        </div>
         <div id="series-head" class="series-head" hidden>
           <button id="btn-series-back">← All series</button>
           <h2 id="series-name"></h2>
@@ -245,6 +252,28 @@
       </section>
 
       <!-- ------------------------------------------------ Settings -->
+      <section id="view-history" class="view">
+        <header class="bar">
+          <div class="tabs" role="tablist">
+            <button data-histview="history" class="active" role="tab">History</button>
+            <button data-histview="stats" role="tab">Statistics</button>
+          </div>
+        </header>
+        <div id="history-pane">
+          <p id="history-empty" class="empty" hidden>Nothing read yet. Books you open appear here, newest first.</p>
+          <div id="history-list" class="history-list"></div>
+          <div class="row"><button id="history-clear">Clear history</button></div>
+        </div>
+        <div id="stats-pane" hidden>
+          <div id="stats-tiles" class="stats-tiles"></div>
+          <h3>The last 30 days</h3>
+          <div id="stats-days" class="stats-days" role="img" aria-label="Minutes read each day for the last 30 days"></div>
+          <h3>Most read</h3>
+          <ol id="stats-top" class="stats-top"></ol>
+          <p class="muted small">Counted while a book is open and you are reading (not while the app sits idle). Incognito reading is not counted.</p>
+        </div>
+      </section>
+
       <section id="view-settings" class="view">
         <h2>Settings</h2>
         <div class="setting desktop-only">
@@ -555,11 +584,20 @@
     <dialog id="lib-menu" class="sheet">
       <p class="sheet-title">Library</p>
       <button id="lib-select">Select books…</button>
+      <button id="lib-shelves">Shelves…</button>
+      <button id="lib-incognito">Incognito mode: off</button>
       <button id="lib-duplicates">Find duplicates</button>
       <button id="btn-check-folders" hidden>Check folders for new books</button>
       <button id="lib-search-help">Search tips</button>
       <button id="lib-app-update">Check for app updates</button>
       <button id="lib-menu-cancel">Cancel</button>
+    </dialog>
+
+    <dialog id="shelves-dialog" class="sheet tall">
+      <h3>Shelves</h3>
+      <p class="muted small">Pick tags to show as tabs in the Library, next to All books and Series. Tag books under Edit details (or several at once with Select books).</p>
+      <div id="shelves-list" class="shelves-list"></div>
+      <div class="row"><button id="shelves-done" class="primary">Done</button></div>
     </dialog>
 
     <dialog id="search-help" class="sheet">

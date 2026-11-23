@@ -186,6 +186,7 @@ const state = {
   // been in the background, which used to drop her back to All books.
   libView: pref("libView", "all") === "series" ? "series" : "all", // "all" or "series"
   openSeries: pref("openSeries", "") || null, // the group key being looked at in the Series view
+  shelf: pref("shelf", "") || null, // a pinned tag shown as its own tab
   reader: null, // { book, kind, cleanup, next, prev }
 };
 
@@ -375,6 +376,7 @@ function show(view) {
   if (current) $("#nav-current").textContent = current.firstChild?.textContent?.trim() || "";
   setNavMenu(false);
   window.__view = view; // for the error log: which screen she was on
+  if (view === "history") renderHistoryView();
   refreshCooldown();
   if (view === "settings") renderLog();
   window.__podficBar?.(); // the "now playing" bar shows everywhere but the player
@@ -463,12 +465,17 @@ function groups(books) {
   });
 }
 
-$$(".tabs button[data-libview]").forEach((b) => b.classList.toggle("active", b.dataset.libview === state.libView));
+$$(".tabs button[data-libview]").forEach((b) =>
+  b.classList.toggle("active", !state.shelf && b.dataset.libview === state.libView),
+);
 $$(".tabs button[data-libview]").forEach((b) =>
   b.addEventListener("click", () => {
     state.libView = b.dataset.libview;
     state.openSeries = null;
+    state.shelf = null;
+    setPref("shelf", "");
     $$(".tabs button[data-libview]").forEach((x) => x.classList.toggle("active", x === b));
+    renderShelfTabs();
     renderShelf();
   }),
 );
@@ -700,8 +707,11 @@ function renderShelf() {
   shelf.textContent = "";
   syncLibLayout();
   $("#library-empty").hidden = state.books.length > 0;
-  const visible = state.books.filter(matchesFilter);
+  if (state.shelf && !pinnedShelves().includes(state.shelf)) state.shelf = null;
+  const onShelf = (b) => !state.shelf || (b.tags || []).some((t) => t.toLowerCase() === state.shelf.toLowerCase());
+  const visible = state.books.filter((b) => matchesFilter(b) && onShelf(b));
   if (state.reversed) visible.reverse();
+  renderContinue(visible.length);
 
   const head = $("#series-head");
   head.hidden = !(state.libView === "series" && state.openSeries);
@@ -1629,6 +1639,7 @@ function reportImport(report) {
 // --------------------------------------------------------------- reader
 
 function closeReader() {
+  stopReading();
   // Closing a book is a good moment to share where she stopped.
   if (state.reader) syncSoon();
   if (state.reader?.cleanup) {
@@ -1732,6 +1743,7 @@ async function openBook(id) {
   }
   setVolumePaging(true);
   if (!history.state?.reader) history.pushState({ reader: true }, "");
+  startReading(book);
   $("#reader-title").textContent = book.title;
   $("#reader-author").textContent = book.author || "";
   syncDayNight();
@@ -1760,7 +1772,386 @@ async function openBook(id) {
 
 function saveWhere(book, position) {
   invoke("save_position", { id: book.id, position: String(position) }).catch(() => {});
+  readingTick(true);
 }
+
+// ------------------------------------------------------ reading sessions
+//
+// Time with a book open and in use is added up for History and Statistics.
+// It stops counting after a few idle minutes or with the app in the
+// background, and not at all in incognito.
+
+const IDLE_AFTER = 4 * 60 * 1000;
+const reading = { book: null, since: 0, last: 0, counted: 0, pages: 0, started: 0, timer: null };
+
+function startReading(book) {
+  stopReading();
+  if (incognito()) return;
+  const now = Date.now();
+  Object.assign(reading, { book, since: now, last: now, counted: 0, pages: 0, started: now });
+  reading.timer = setInterval(() => readingTick(false), 30_000);
+}
+
+/// Called on every page turn (turned = true) and every half minute.
+function readingTick(turned) {
+  if (!reading.book) return;
+  const now = Date.now();
+  const away = document.visibilityState === "hidden";
+  if (!away && now - reading.last < IDLE_AFTER) reading.counted += now - reading.since;
+  reading.since = now;
+  if (turned) {
+    reading.pages += 1;
+    reading.last = now;
+  }
+  if (reading.counted >= 120_000 || reading.pages >= 20) flushReading();
+}
+
+function flushReading() {
+  if (!reading.book) return;
+  const seconds = Math.round(reading.counted / 1000);
+  const pages = reading.pages;
+  if (seconds <= 0 && pages <= 0) return;
+  const started = Math.round(reading.started / 1000);
+  reading.counted = 0;
+  reading.pages = 0;
+  reading.started = Date.now();
+  invoke("record_session", {
+    bookId: reading.book.id,
+    started,
+    ended: Math.round(Date.now() / 1000),
+    seconds,
+    pages,
+  }).catch(() => {});
+}
+
+function stopReading() {
+  if (!reading.book) return;
+  readingTick(false);
+  flushReading();
+  clearInterval(reading.timer);
+  reading.book = null;
+}
+
+["pointerdown", "keydown", "wheel"].forEach((ev) =>
+  document.addEventListener(ev, () => reading.book && (reading.last = Date.now()), { passive: true, capture: true }),
+);
+document.addEventListener("visibilitychange", () => {
+  if (!reading.book) return;
+  readingTick(false); // count up to now, then stop counting while away
+  if (document.visibilityState === "hidden") flushReading();
+  else reading.last = Date.now();
+});
+
+// ------------------------------------------------------ history and stats
+
+let histView = "history";
+$$("[data-histview]").forEach((b) =>
+  b.addEventListener("click", () => {
+    histView = b.dataset.histview;
+    $$("[data-histview]").forEach((x) => x.classList.toggle("active", x === b));
+    renderHistoryView();
+  }),
+);
+
+function renderHistoryView() {
+  $("#history-pane").hidden = histView !== "history";
+  $("#stats-pane").hidden = histView !== "stats";
+  if (histView === "history") renderHistory();
+  else renderStats();
+}
+
+function minutes(seconds) {
+  if (seconds < 60) return seconds > 0 ? "under a minute" : "0 min";
+  const m = Math.round(seconds / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+}
+
+function dayLabel(date) {
+  const today = new Date();
+  const d0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diff = Math.round((d0 - d) / 86_400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+
+async function renderHistory() {
+  let entries = [];
+  try {
+    entries = await invoke("reading_history", { limit: 400 });
+  } catch (e) {
+    logError("history", e);
+  }
+  const box = $("#history-list");
+  box.textContent = "";
+  $("#history-empty").hidden = entries.length > 0;
+  let lastDay = "";
+  for (const h of entries) {
+    const when = new Date(h.ended_at * 1000);
+    const day = dayLabel(when);
+    if (day !== lastDay) {
+      const hd = document.createElement("h4");
+      hd.textContent = day;
+      box.appendChild(hd);
+      lastDay = day;
+    }
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const info = document.createElement("button");
+    info.className = "history-open";
+    const t = document.createElement("strong");
+    t.textContent = h.title;
+    const meta = document.createElement("span");
+    meta.className = "muted small";
+    meta.textContent = [
+      when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hourCycle: pref("clock", "12") === "24" ? "h23" : "h12" }),
+      minutes(h.seconds),
+      h.pages ? `${h.pages} page${h.pages === 1 ? "" : "s"}` : "",
+      h.present ? "" : "no longer in the library",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    info.append(t, meta);
+    info.disabled = !h.present;
+    info.addEventListener("click", async () => {
+      const book = state.books.find((b) => b.id === h.book_id);
+      if (!book) return;
+      if (book.format === "audio") openPodfic(book);
+      else openBook(book.id);
+    });
+    const del = document.createElement("button");
+    del.className = "icon";
+    del.textContent = "✕";
+    del.title = "Remove from history";
+    del.addEventListener("click", async () => {
+      await call("forget_history", { entry: h.id });
+      row.remove();
+    });
+    row.append(info, del);
+    box.appendChild(row);
+  }
+}
+
+$("#history-clear").addEventListener("click", async () => {
+  if (!(await confirmAsk("Clear all of your reading history? Statistics start again from nothing too."))) return;
+  await call("forget_history", { entry: null });
+  renderHistoryView();
+});
+
+async function renderStats() {
+  let data = { sessions: [], finished: [] };
+  try {
+    data = await invoke("reading_stats");
+  } catch (e) {
+    logError("statistics", e);
+  }
+  const now = new Date();
+  const dayKey = (t) => {
+    const d = new Date(t * 1000);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+  const today0 = startOf(now);
+  const week0 = today0 - ((now.getDay() + 6) % 7) * 86400; // Monday
+  const year0 = new Date(now.getFullYear(), 0, 1).getTime() / 1000;
+  let total = 0, today = 0, week = 0, pages = 0;
+  const perDay = new Map();
+  const perBook = new Map();
+  for (const [ended, secs, pg, bookId, title] of data.sessions) {
+    total += secs;
+    pages += pg;
+    if (ended >= today0) today += secs;
+    if (ended >= week0) week += secs;
+    perDay.set(dayKey(ended), (perDay.get(dayKey(ended)) || 0) + secs);
+    const b = perBook.get(bookId) || { title, secs: 0 };
+    b.secs += secs;
+    b.title = title;
+    perBook.set(bookId, b);
+  }
+  // Streaks: days in a row with at least a minute of reading.
+  const readOn = (d) => (perDay.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) || 0) >= 60;
+  let streak = 0;
+  const cursor = new Date(now);
+  if (!readOn(cursor)) cursor.setDate(cursor.getDate() - 1); // today not started yet
+  while (readOn(cursor)) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  let best = 0, run = 0;
+  const days = [...perDay.entries()]
+    .filter(([, secs]) => secs >= 60)
+    .map(([k]) => {
+      const [y, m, d] = k.split("-").map(Number);
+      return new Date(y, m, d).getTime();
+    })
+    .sort((a, b) => a - b);
+  for (let i = 0; i < days.length; i++) {
+    run = i > 0 && Math.round((days[i] - days[i - 1]) / 86_400_000) === 1 ? run + 1 : 1;
+    best = Math.max(best, run);
+  }
+  const finishedYear = data.finished.filter((t) => t >= year0).length;
+
+  const tiles = [
+    ["Today", minutes(today)],
+    ["This week", minutes(week)],
+    ["All time", minutes(total)],
+    ["Pages turned", pages.toLocaleString()],
+    ["Finished this year", String(finishedYear)],
+    ["Finished in all", String(data.finished.length)],
+    ["Streak", `${streak} day${streak === 1 ? "" : "s"}`],
+    ["Longest streak", `${best} day${best === 1 ? "" : "s"}`],
+  ];
+  const box = $("#stats-tiles");
+  box.textContent = "";
+  for (const [label, value] of tiles) {
+    const t = document.createElement("div");
+    t.className = "stat-tile";
+    const v = document.createElement("strong");
+    v.textContent = value;
+    const l = document.createElement("span");
+    l.textContent = label;
+    t.append(v, l);
+    box.appendChild(t);
+  }
+
+  // Bars for the last 30 days.
+  const bars = $("#stats-days");
+  bars.textContent = "";
+  const vals = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    vals.push([d, perDay.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) || 0]);
+  }
+  const max = Math.max(60, ...vals.map(([, v]) => v));
+  for (const [d, v] of vals) {
+    const bar = document.createElement("div");
+    bar.className = "stat-bar";
+    bar.style.height = `${Math.max(v ? 4 : 1, Math.round((v / max) * 100))}%`;
+    bar.title = `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}: ${minutes(v)}`;
+    bars.appendChild(bar);
+  }
+
+  const top = $("#stats-top");
+  top.textContent = "";
+  [...perBook.values()]
+    .sort((a, b) => b.secs - a.secs)
+    .slice(0, 10)
+    .forEach((b) => {
+      const li = document.createElement("li");
+      li.textContent = `${b.title} · ${minutes(b.secs)}`;
+      top.appendChild(li);
+    });
+  if (!top.children.length) top.innerHTML = "<li class='muted'>Nothing yet.</li>";
+}
+
+// ------------------------------------------------------------- shelves
+
+function pinnedShelves() {
+  try {
+    const v = JSON.parse(pref("shelves", "[]"));
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderShelfTabs() {
+  const box = $("#shelf-tabs");
+  box.textContent = "";
+  for (const tag of pinnedShelves()) {
+    const b = document.createElement("button");
+    b.role = "tab";
+    b.textContent = tag;
+    b.classList.toggle("active", state.shelf === tag);
+    b.addEventListener("click", () => {
+      state.shelf = tag;
+      state.libView = "all";
+      state.openSeries = null;
+      setPref("shelf", tag);
+      $$(".tabs button[data-libview]").forEach((x) => x.classList.remove("active"));
+      renderShelfTabs();
+      renderShelf();
+    });
+    box.appendChild(b);
+  }
+}
+
+$("#lib-shelves").addEventListener("click", async () => {
+  $("#lib-menu").close();
+  let tags = [];
+  try {
+    tags = await invoke("list_tags");
+  } catch {
+    /* none */
+  }
+  const pinned = new Set(pinnedShelves());
+  const list = $("#shelves-list");
+  list.textContent = "";
+  if (!tags.length) list.innerHTML = "<p class='muted'>No tags yet. Add some under a book's Edit details first.</p>";
+  for (const [tag, count] of tags) {
+    const l = document.createElement("label");
+    l.className = "check";
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    c.checked = pinned.has(tag);
+    c.addEventListener("change", () => {
+      const now = pinnedShelves().filter((t) => t !== tag);
+      if (c.checked) now.push(tag);
+      setPref("shelves", JSON.stringify(now));
+      if (!c.checked && state.shelf === tag) state.shelf = null;
+      renderShelfTabs();
+      renderShelf();
+    });
+    l.append(c, ` ${tag} (${count})`);
+    list.appendChild(l);
+  }
+  $("#shelves-dialog").showModal();
+});
+$("#shelves-done").addEventListener("click", () => $("#shelves-dialog").close());
+
+// ------------------------------------------------------ continue reading
+
+function renderContinue(visibleCount) {
+  const row = $("#continue-row");
+  // Only on the plain library: no filter, no shelf, not inside a series.
+  const plain = !state.filter && !state.shelf && state.libView === "all" && !selection.on;
+  const books = plain
+    ? state.books
+        .filter((b) => readStatus(b) === "reading" && b.last_opened_at && !b.missing && b.format !== "audio")
+        .sort((a, b) => (b.last_opened_at || 0) - (a.last_opened_at || 0))
+        .slice(0, 12)
+    : [];
+  row.hidden = books.length === 0 || visibleCount === 0;
+  const list = $("#continue-list");
+  list.textContent = "";
+  for (const b of books) list.appendChild(bookCard(b));
+}
+
+// ------------------------------------------------------------ incognito
+
+function incognito() {
+  return pref("incognito", "") === "1";
+}
+
+function applyIncognito() {
+  const on = incognito();
+  $("#incognito-badge").hidden = !on;
+  $("#lib-incognito").textContent = `Incognito mode: ${on ? "on" : "off"}`;
+}
+applyIncognito();
+$("#lib-incognito").addEventListener("click", () => {
+  $("#lib-menu").close();
+  const on = !incognito();
+  setPref("incognito", on ? "1" : "");
+  if (on) stopReading();
+  applyIncognito();
+  toast(
+    on
+      ? "Incognito: what you read now is not kept in History or Statistics, and nothing syncs until you switch it off."
+      : "Incognito is off. History, Statistics and sync are back on.",
+  );
+});
 
 // ------------------------------------------------------------- touch
 //
@@ -4077,6 +4468,10 @@ async function refreshSyncStatus() {
 /// Settings, not as a message over whatever she is doing.
 async function runSync(quiet = true) {
   if (syncUi.running || !syncUi.status?.signed_in) return;
+  if (incognito()) {
+    if (!quiet) toast("Incognito is on, so nothing syncs. Switch it off in the Library ⋯ menu.");
+    return;
+  }
   syncUi.running = true;
   $("#sync-state").textContent = describeSync();
   try {
@@ -5121,6 +5516,7 @@ function setMediaSession(book) {
 // ----------------------------------------------------------------- boot
 
 (async function boot() {
+  renderShelfTabs();
   await refreshLibrary();
   await refreshSavedSearches();
   await refreshSettings();
