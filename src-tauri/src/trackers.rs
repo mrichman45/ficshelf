@@ -291,6 +291,120 @@ pub async fn push(service: &str, token: &str, media_id: i64, p: &Progress) -> Re
     }
 }
 
+// ---------------------------------------------------------------- pull
+
+/// Her entry for a title on the service: volumes read, status, score (1-5).
+#[derive(Serialize, Clone, Default)]
+pub struct Entry {
+    pub volumes: i64,
+    pub completed: bool,
+    pub stars: Option<f64>,
+    pub listed: bool,
+}
+
+pub async fn pull(service: &str, token: &str, media_id: i64) -> Result<Entry> {
+    match service {
+        "anilist" => {
+            let v = anilist(
+                token,
+                "query ($id: Int) { Media(id: $id) { mediaListEntry { progressVolumes status score(format: POINT_100) } } }",
+                json!({ "id": media_id }),
+            )
+            .await?;
+            let e = &v["data"]["Media"]["mediaListEntry"];
+            if e.is_null() {
+                return Ok(Entry::default());
+            }
+            Ok(Entry {
+                volumes: e["progressVolumes"].as_i64().unwrap_or(0),
+                completed: e["status"].as_str() == Some("COMPLETED"),
+                stars: e["score"].as_f64().filter(|s| *s > 0.0).map(|s| (s / 20.0).clamp(1.0, 5.0)),
+                listed: true,
+            })
+        }
+        _ => {
+            let resp = client()?
+                .get(format!("https://api.myanimelist.net/v2/manga/{media_id}?fields=my_list_status"))
+                .bearer_auth(token)
+                .send()
+                .await?;
+            let v = json_of(resp).await?;
+            let e = &v["my_list_status"];
+            if e.is_null() {
+                return Ok(Entry::default());
+            }
+            Ok(Entry {
+                volumes: e["num_volumes_read"].as_i64().unwrap_or(0),
+                completed: e["status"].as_str() == Some("completed"),
+                stars: e["score"].as_f64().filter(|s| *s > 0.0).map(|s| (s / 2.0).clamp(1.0, 5.0)),
+                listed: true,
+            })
+        }
+    }
+}
+
+// ------------------------------------------------------- recommendations
+
+#[derive(Serialize, Clone)]
+pub struct Suggestion {
+    pub title: String,
+    pub cover: Option<String>,
+    pub url: String,
+    pub kind: Option<String>,
+    pub year: Option<i64>,
+}
+
+pub async fn recommendations(service: &str, token: &str, media_id: i64) -> Result<Vec<Suggestion>> {
+    match service {
+        "anilist" => {
+            let v = anilist(
+                token,
+                "query ($id: Int) { Media(id: $id) { recommendations(sort: RATING_DESC, perPage: 15) { nodes {
+                    mediaRecommendation { id siteUrl format startDate { year } title { english romaji } coverImage { medium } } } } } }",
+                json!({ "id": media_id }),
+            )
+            .await?;
+            Ok(v["data"]["Media"]["recommendations"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| {
+                    let m = &n["mediaRecommendation"];
+                    Some(Suggestion {
+                        title: m["title"]["english"].as_str().or_else(|| m["title"]["romaji"].as_str())?.to_string(),
+                        cover: m["coverImage"]["medium"].as_str().map(str::to_string),
+                        url: m["siteUrl"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://anilist.co/manga/{}", m["id"])),
+                        kind: m["format"].as_str().map(|f| f.replace('_', " ").to_lowercase()),
+                        year: m["startDate"]["year"].as_i64(),
+                    })
+                })
+                .collect())
+        }
+        _ => {
+            let mut r = client()?.get(format!("https://api.myanimelist.net/v2/manga/{media_id}?fields=recommendations"));
+            r = if token.is_empty() { r.header("X-MAL-CLIENT-ID", MAL_ID.unwrap_or("").trim()) } else { r.bearer_auth(token) };
+            let v = json_of(r.send().await?).await?;
+            Ok(v["recommendations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| {
+                    let n = &d["node"];
+                    let id = n["id"].as_i64()?;
+                    Some(Suggestion {
+                        title: n["title"].as_str()?.to_string(),
+                        cover: n["main_picture"]["medium"].as_str().map(str::to_string),
+                        url: format!("https://myanimelist.net/manga/{id}"),
+                        kind: None,
+                        year: None,
+                    })
+                })
+                .take(15)
+                .collect())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

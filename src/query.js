@@ -11,6 +11,7 @@
 const FIELDS = new Set([
   "tag", "tags", "author", "by", "series", "title", "format", "status",
   "rating", "stars", "folder", "missing", "locked", "drm", "ao3", "new", "updated",
+  "fandom", "rated",
 ]);
 
 /// Split a query into terms: { field, value, negate }. A field nobody knows
@@ -80,6 +81,11 @@ function termMatches(book, { field, value }) {
       return has(book.title);
     case "folder":
       return has(book.folder);
+    case "fandom":
+      return (book.fandoms || []).some((f) => f.toLowerCase().includes(value));
+    case "rated":
+      // AO3's rating: rated:explicit, rated:teen, rated:general…
+      return (book.ao3_rating || "").toLowerCase().includes(value);
     case "format": {
       const f = (book.format || "").toLowerCase();
       if (value === "podfic" || value === "audio") return f === "audio";

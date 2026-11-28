@@ -492,6 +492,7 @@ document.addEventListener("keydown", (e) => {
 
 async function refreshLibrary() {
   state.books = await call("list_books", { sort: state.sort });
+  if (state.sort === "custom") state.books = inCustomOrder(state.books);
   renderShelf();
   await refreshUpdateBadge();
   checkTracking();
@@ -540,17 +541,61 @@ function formatIndex(n) {
   return Number.isInteger(n) ? String(n) : String(n);
 }
 
+const GROUP_NONE = {
+  author: "No author",
+  fandom: "Not from AO3",
+  tag: "No tags",
+  status: "Not started",
+  rating: "No AO3 rating",
+  folder: "No folder",
+};
+const STATUS_GROUP = { unread: "Unread", reading: "Reading", finished: "Finished" };
+
+/// What the Series tab groups by: series (the usual), author, fandom, tag,
+/// status, AO3 rating or folder.
+function groupBy() {
+  return pref("groupBy", "series");
+}
+
+/// The groups a book belongs to under the current grouping (several for
+/// tags and fandoms).
+function groupKeys(book) {
+  const by = groupBy();
+  const none = GROUP_NONE[by];
+  switch (by) {
+    case "author":
+      return [book.author?.trim() || none];
+    case "fandom":
+      return book.fandoms?.length ? book.fandoms : [none];
+    case "tag":
+      return book.tags?.length ? book.tags : [none];
+    case "status":
+      return [STATUS_GROUP[readStatus(book)] || none];
+    case "rating":
+      return [book.ao3_rating || none];
+    case "folder":
+      return [book.folder || none];
+    default:
+      return [groupOf(book)];
+  }
+}
+
 function groups(books) {
   const map = new Map();
+  const by = groupBy();
   for (const b of books) {
-    const key = groupOf(b);
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(b);
+    for (const key of by === "series" ? [groupOf(b)] : groupKeys(b)) {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(b);
+    }
   }
+  const last = by === "series" ? OTHER : GROUP_NONE[by];
   for (const list of map.values()) list.sort(seriesOrder);
+  const statusOrder = ["Reading", "Unread", "Finished"];
   return [...map.entries()].sort(([a], [b]) => {
-    if (a === OTHER) return 1;
-    if (b === OTHER) return -1;
+    if (a === last) return 1;
+    if (b === last) return -1;
+    if (by === "status") return statusOrder.indexOf(a) - statusOrder.indexOf(b);
     return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
   });
 }
@@ -731,6 +776,7 @@ function bookCard(book, { showNumber = false } = {}) {
       pressedLong = false;
       return;
     }
+    if (arrange?.on) return;
     if (selection.on) {
       toggleSelected(book.id, card);
       return;
@@ -772,11 +818,13 @@ function seriesCard(name, books) {
   });
   if (IS_ANDROID) {
     onLongPress(card, () => {
+      if (groupBy() !== "series") return;
       pressedLong = true;
       openSeriesRename(name);
     });
   } else {
     card.addEventListener("contextmenu", (e) => {
+      if (groupBy() !== "series") return;
       e.preventDefault();
       openSeriesRename(name);
     });
@@ -799,12 +847,20 @@ function renderShelf() {
   $("#library-empty").hidden = state.books.length > 0;
   if (state.shelf && !pinnedShelves().includes(state.shelf)) state.shelf = null;
   const onShelf = (b) => !state.shelf || (b.tags || []).some((t) => t.toLowerCase() === state.shelf.toLowerCase());
-  const visible = state.books.filter((b) => matchesFilter(b) && onShelf(b));
+  const visible = state.books.filter((b) => matchesFilter(b) && onShelf(b) && !isHidden(b));
   if (state.reversed) visible.reverse();
   renderContinue(visible.length);
 
   const head = $("#series-head");
   head.hidden = !(state.libView === "series" && state.openSeries);
+  $("#group-by").hidden = state.libView !== "series";
+  const bySeries = groupBy() === "series";
+  $("#btn-series-rename").hidden = !bySeries;
+  $("#btn-series-track").hidden = !bySeries;
+  $("#btn-series-more").hidden = !(bySeries && state.openSeries && (tracking?.links || []).some((l) => l.series === state.openSeries));
+  $("#btn-series-back").textContent = bySeries ? "← All series" : `← All ${$("#group-by").selectedOptions[0]?.textContent.replace(/^By /, "") || "groups"}s`;
+  $("#arrange-bar").hidden = !arrange?.on;
+  shelf.classList.toggle("arranging", Boolean(arrange?.on));
 
   if (state.libView === "all") {
     for (const book of visible) shelf.appendChild(bookCard(book));
@@ -828,11 +884,159 @@ function renderShelf() {
       return renderShelf();
     }
     $("#series-name").textContent = entry[0];
-    for (const book of entry[1]) shelf.appendChild(bookCard(book, { showNumber: true }));
+    for (const book of entry[1]) shelf.appendChild(bookCard(book, { showNumber: bySeries }));
+    tintSeriesHead(entry[1]);
     return;
   }
   for (const [name, books] of all) shelf.appendChild(seriesCard(name, books));
 }
+
+// ------------------------------------------------- hiding and your order
+
+state.showHidden = false; // never remembered: hidden again after a restart
+
+function hiddenTags() {
+  try {
+    const t = JSON.parse(pref("hiddenTags", "[]"));
+    return Array.isArray(t) ? t : [];
+  } catch {
+    return [];
+  }
+}
+
+/// Books kept out of the Library: those with a hidden tag, and Explicit
+/// works when that is turned on.
+function isHidden(book) {
+  if (state.showHidden) return false;
+  if (pref("hideExplicit", "") === "1" && /^explicit$/i.test(book.ao3_rating || "")) return true;
+  const hidden = hiddenTags().map((t) => t.toLowerCase());
+  return hidden.length > 0 && (book.tags || []).some((t) => hidden.includes(t.toLowerCase()));
+}
+
+function syncShowHidden() {
+  $("#lib-show-hidden").textContent = `Show hidden books: ${state.showHidden ? "on" : "off"}`;
+}
+syncShowHidden();
+$("#lib-show-hidden").addEventListener("click", () => {
+  $("#lib-menu").close();
+  state.showHidden = !state.showHidden;
+  syncShowHidden();
+  renderShelf();
+});
+$("#hide-explicit").addEventListener("change", (e) => {
+  setPref("hideExplicit", e.target.checked ? "1" : "");
+  renderShelf();
+});
+
+$("#group-by").value = groupBy();
+$("#group-by").addEventListener("change", (e) => {
+  setPref("groupBy", e.target.value);
+  state.openSeries = null;
+  renderShelf();
+});
+
+// Your order: the ids in the order she arranged them. Books added since go
+// first, newest first, as with Recently added.
+function customOrder() {
+  try {
+    const o = JSON.parse(pref("customOrder", "[]"));
+    return Array.isArray(o) ? o : [];
+  } catch {
+    return [];
+  }
+}
+
+function inCustomOrder(books) {
+  const pos = new Map(customOrder().map((id, i) => [id, i]));
+  const known = books.filter((b) => pos.has(b.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  const fresh = books.filter((b) => !pos.has(b.id)); // already newest first
+  return [...fresh, ...known];
+}
+
+var arrange = { on: false, card: null, ghost: null, pointer: null, scrollTimer: 0 };
+
+function startArranging() {
+  state.libView = "all";
+  state.openSeries = null;
+  state.shelf = null;
+  state.filter = "";
+  $("#filter").value = "";
+  $$(".tabs button[data-libview]").forEach((x) => x.classList.toggle("active", x.dataset.libview === "all"));
+  if (state.sort !== "custom") {
+    // Start from what she sees now.
+    setPref("customOrder", JSON.stringify(state.books.map((b) => b.id)));
+    state.sort = "custom";
+    setPref("sort", "custom");
+    $("#sort").value = "custom";
+    syncSortButton();
+  }
+  if (state.reversed) {
+    state.reversed = false;
+    setPref("sortReversed", "no");
+    syncSortButton();
+  }
+  arrange.on = true;
+  refreshLibrary();
+}
+
+function stopArranging() {
+  arrange.on = false;
+  const ids = [...$("#shelf").querySelectorAll(".card[data-id]")].map((c) => Number(c.dataset.id));
+  // Books not on screen (none, normally) keep their place after these.
+  const rest = customOrder().filter((id) => !ids.includes(id));
+  setPref("customOrder", JSON.stringify([...ids, ...rest]));
+  refreshLibrary();
+}
+
+$("#lib-arrange").addEventListener("click", () => {
+  $("#lib-menu").close();
+  startArranging();
+});
+$("#arrange-done").addEventListener("click", stopArranging);
+
+// Dragging: press a card, move it, let go. Works with a mouse and a finger.
+$("#shelf").addEventListener("pointerdown", (e) => {
+  if (!arrange.on) return;
+  const card = e.target.closest(".card[data-id]");
+  if (!card) return;
+  e.preventDefault();
+  arrange.card = card;
+  arrange.pointer = e.pointerId;
+  card.classList.add("dragging");
+  card.setPointerCapture(e.pointerId);
+});
+$("#shelf").addEventListener("pointermove", (e) => {
+  if (!arrange.on || !arrange.card || e.pointerId !== arrange.pointer) return;
+  const shelf = $("#shelf");
+  arrange.card.style.visibility = "hidden";
+  const under = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".card[data-id]");
+  arrange.card.style.visibility = "";
+  if (under && under !== arrange.card && under.parentNode === shelf) {
+    const r = under.getBoundingClientRect();
+    const list = shelf.classList.contains("list");
+    const after = list ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
+    shelf.insertBefore(arrange.card, after ? under.nextSibling : under);
+  }
+  // Scroll when dragging near the top or bottom.
+  const view = $("#view-library");
+  const vr = view.getBoundingClientRect();
+  clearInterval(arrange.scrollTimer);
+  const edge = 60;
+  const dir = e.clientY < vr.top + edge ? -1 : e.clientY > vr.bottom - edge ? 1 : 0;
+  if (dir) arrange.scrollTimer = setInterval(() => view.scrollBy(0, dir * 14), 30);
+});
+const endDrag = () => {
+  clearInterval(arrange.scrollTimer);
+  if (!arrange.card) return;
+  arrange.card.classList.remove("dragging");
+  arrange.card = null;
+  arrange.pointer = null;
+  const ids = [...$("#shelf").querySelectorAll(".card[data-id]")].map((c) => Number(c.dataset.id));
+  const rest = customOrder().filter((id) => !ids.includes(id));
+  setPref("customOrder", JSON.stringify([...ids, ...rest]));
+};
+$("#shelf").addEventListener("pointerup", endDrag);
+$("#shelf").addEventListener("pointercancel", endDrag);
 
 // ----------------------------------------------------------- locked books
 //
@@ -888,8 +1092,102 @@ function openBookMenu(book) {
   $("#book-menu-convert").hidden = !convertible || Boolean(book.drm);
   $("#book-menu-convert").textContent = book.format === "mobi" ? "Convert to EPUB" : "Convert to CBZ";
   $("#book-menu-finished").textContent = readStatus(book) === "finished" ? "Mark as unread" : "Mark as finished";
+  $("#book-menu-cover").hidden = !book.has_cover;
+  applyTint($("#book-menu"), null);
+  coverTint(book).then((t) => menuBook === book && applyTint($("#book-menu"), t));
   $("#book-menu").showModal();
 }
+
+// ------------------------------------------------- covers: colour, viewer
+
+/// A soft colour drawn from a cover (its average, nudged towards its most
+/// colourful pixels), cached per book.
+const coverTints = new Map();
+async function coverTint(book) {
+  if (!book?.has_cover) return null;
+  if (coverTints.has(book.id)) return coverTints.get(book.id);
+  let tint = null;
+  try {
+    const url = await invoke("book_cover", { id: book.id });
+    if (url) {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = 24;
+      c.height = 36;
+      const g = c.getContext("2d", { willReadFrequently: true });
+      g.drawImage(img, 0, 0, 24, 36);
+      const d = g.getImageData(0, 0, 24, 36).data;
+      let r = 0, gr = 0, b = 0, w = 0;
+      for (let k = 0; k < d.length; k += 4) {
+        const max = Math.max(d[k], d[k + 1], d[k + 2]);
+        const min = Math.min(d[k], d[k + 1], d[k + 2]);
+        const weight = 1 + ((max - min) / 255) * 4; // colourful pixels count more
+        r += d[k] * weight;
+        gr += d[k + 1] * weight;
+        b += d[k + 2] * weight;
+        w += weight;
+      }
+      tint = [Math.round(r / w), Math.round(gr / w), Math.round(b / w)];
+    }
+  } catch {
+    tint = null;
+  }
+  coverTints.set(book.id, tint);
+  return tint;
+}
+
+function applyTint(el, tint) {
+  if (!el) return;
+  if (!tint) {
+    el.style.removeProperty("--tint");
+    el.classList.remove("tinted");
+    return;
+  }
+  el.style.setProperty("--tint", `${tint[0]}, ${tint[1]}, ${tint[2]}`);
+  el.classList.add("tinted");
+}
+
+async function tintSeriesHead(books) {
+  const head = $("#series-head");
+  const withCover = books.find((b) => b.has_cover);
+  applyTint(head, withCover ? await coverTint(withCover) : null);
+}
+
+let viewerBook = null;
+$("#book-menu-cover").addEventListener("click", async () => {
+  $("#book-menu").close();
+  const book = menuBook;
+  if (!book?.has_cover) return;
+  viewerBook = book;
+  const url = await invoke("book_cover", { id: book.id }).catch(() => null);
+  if (!url) return toast("This book has no cover.", true);
+  $("#cover-big").src = url;
+  $("#cover-title").textContent = book.title;
+  $("#cover-share").hidden = !window.FicShelfAndroid?.openExternally;
+  applyTint($("#cover-viewer"), await coverTint(book));
+  $("#cover-viewer").showModal();
+});
+$("#cover-close").addEventListener("click", () => $("#cover-viewer").close());
+$("#cover-viewer").addEventListener("click", (e) => e.target === $("#cover-viewer") && $("#cover-viewer").close());
+$("#cover-save").addEventListener("click", async () => {
+  try {
+    const path = await invoke("save_cover", { id: viewerBook.id });
+    toast(`Saved to ${path}`);
+    if (!IS_ANDROID) invoke("reveal_file", { path }).catch(() => {});
+  } catch (e) {
+    toast(`Could not save it: ${e}`, true);
+  }
+});
+$("#cover-share").addEventListener("click", async () => {
+  try {
+    const path = await invoke("save_cover", { id: viewerBook.id });
+    if (!window.FicShelfAndroid.openExternally(path, "image/*")) toast(`Saved to ${path}`);
+  } catch (e) {
+    toast(`Could not share it: ${e}`, true);
+  }
+});
 
 $("#book-menu-cancel").addEventListener("click", () => $("#book-menu").close());
 $("#book-menu").addEventListener("click", (e) => {
@@ -1436,6 +1734,7 @@ const SORT_LABELS = {
   recent: ["Most recent first", "Least recent first"],
   title: ["A → Z", "Z → A"],
   author: ["A → Z", "Z → A"],
+  custom: ["Your order", "Your order, reversed"],
 };
 
 function syncSortButton() {
@@ -1760,6 +2059,7 @@ function reportImport(report) {
 // --------------------------------------------------------------- reader
 
 function closeReader() {
+  $("#ocr-overlay").hidden = true;
   ttsStop();
   closeSide();
   stopReading();
@@ -2733,7 +3033,7 @@ document.addEventListener("visibilitychange", () => {
 // ------------------------------------------------ AniList / MyAnimeList
 
 const SERVICE_NAME = { anilist: "AniList", mal: "MyAnimeList" };
-const tracking = { services: [], links: [] };
+var tracking = { services: [], links: [] };
 
 async function loadTracking() {
   try {
@@ -2874,7 +3174,10 @@ function renderTrackLinked() {
     p.textContent = `Linked to “${link.title}”${link.pushed_at ? `, last updated ${new Date(link.pushed_at * 1000).toLocaleDateString()}` : ""}.`;
     const now = document.createElement("button");
     now.textContent = "Update now";
-    now.addEventListener("click", () => pushTracking(link.series, true));
+    now.addEventListener("click", async () => {
+      await pullTracking(link.series, true);
+      await pushTracking(link.series, true);
+    });
     const un = document.createElement("button");
     un.textContent = "Unlink";
     un.addEventListener("click", async () => {
@@ -2882,9 +3185,12 @@ function renderTrackLinked() {
       await loadTracking();
       renderTrackLinked();
     });
+    const more = document.createElement("button");
+    more.textContent = "More like this";
+    more.addEventListener("click", () => openRecommendations(link.series));
     const row = document.createElement("div");
     row.className = "row";
-    row.append(now, un);
+    row.append(now, more, un);
     box.append(p, row);
   }
 }
@@ -2984,6 +3290,102 @@ async function pushTracking(series, loud = false) {
   }
 }
 
+function pulledAt() {
+  try {
+    return JSON.parse(pref("trackPulled", "{}")) || {};
+  } catch {
+    return {};
+  }
+}
+
+/// Bring in progress made in another app: if the list says more volumes
+/// are read than the library does, the first ones in the series are marked
+/// finished. Nothing is ever marked unread this way.
+async function pullTracking(series, loud = false) {
+  let remote;
+  try {
+    remote = await invoke("tracker_pull", { series });
+  } catch (e) {
+    logError(`tracking pull (${series})`, e);
+    if (loud) toast(`Could not read the list: ${e}`, true, false);
+    return;
+  }
+  const at = pulledAt();
+  at[series] = Date.now();
+  setPref("trackPulled", JSON.stringify(at));
+  if (!remote) return;
+  const books = state.books.filter((b) => groupOf(b) === series).sort(seriesOrder);
+  const want = remote.completed && remote.volumes === 0 ? books.length : Math.min(remote.volumes, books.length);
+  const toMark = books.slice(0, want).filter((b) => readStatus(b) !== "finished");
+  if (!toMark.length) return;
+  try {
+    await invoke("bulk_edit", {
+      ids: toMark.map((b) => b.id),
+      change: { author: null, series: null, clearSeries: false, numberFrom: null, addTags: [], removeTags: [], rating: null, clearRating: false, status: "finished" },
+    });
+  } catch (e) {
+    logError(`tracking pull (${series})`, e);
+    return;
+  }
+  state.books = await call("list_books", { sort: state.sort });
+  if (state.sort === "custom") state.books = inCustomOrder(state.books);
+  // What was just brought in is not sent straight back.
+  const p = seriesProgress(series);
+  const all = pushedProgress();
+  all[series] = `${p.volumes}|${p.completed}|${p.stars}`;
+  setPref("trackPushed", JSON.stringify(all));
+  renderShelf();
+  toast(`${series}: marked ${toMark.length} volume${toMark.length === 1 ? "" : "s"} finished, as on your list.`);
+}
+
+// "More like this": recommendations from the linked service.
+async function openRecommendations(series) {
+  $("#recs-series").textContent = series;
+  $("#recs-status").textContent = "Asking…";
+  const box = $("#recs-list");
+  box.textContent = "";
+  $("#recs-sheet").showModal();
+  let list = [];
+  try {
+    list = await invoke("tracker_recommendations", { series });
+  } catch (e) {
+    $("#recs-status").textContent = String(e);
+    return;
+  }
+  $("#recs-status").textContent = list.length ? "" : "No recommendations yet for this one.";
+  const mine = new Set(groups(state.books).map(([k]) => k.toLowerCase()));
+  for (const m of list) {
+    const card = document.createElement("article");
+    card.className = "lookup-card";
+    if (m.cover) {
+      const img = document.createElement("img");
+      img.src = m.cover;
+      img.alt = "";
+      img.loading = "lazy";
+      card.appendChild(img);
+    } else {
+      const d = document.createElement("div");
+      d.className = "lookup-nocover";
+      card.appendChild(d);
+    }
+    const info = document.createElement("div");
+    const t = document.createElement("strong");
+    t.textContent = m.title;
+    const sub = document.createElement("div");
+    sub.className = "muted small";
+    const have = [...mine].some((k) => k && (k.includes(m.title.toLowerCase()) || m.title.toLowerCase().includes(k)));
+    sub.textContent = [m.kind, m.year, have ? "in your library" : null].filter(Boolean).join(" · ");
+    const open = document.createElement("button");
+    open.textContent = "Open page";
+    open.addEventListener("click", () => invoke("open_link", { url: m.url }).catch(() => {}));
+    info.append(t, sub, open);
+    card.appendChild(info);
+    box.appendChild(card);
+  }
+}
+$("#recs-done").addEventListener("click", () => $("#recs-sheet").close());
+$("#btn-series-more").addEventListener("click", () => state.openSeries && openRecommendations(state.openSeries));
+
 let trackingTimer = 0;
 /// After the library changes, update the lists for tracked series whose
 /// progress moved (not in incognito mode).
@@ -2996,6 +3398,11 @@ function checkTracking() {
     const signedIn = new Set(tracking.services.filter((s) => s.account).map((s) => s.service));
     const pushed = pushedProgress();
     const series = new Set(tracking.links.filter((l) => signedIn.has(l.service)).map((l) => l.series));
+    // Two-way: now and then, see whether she read further somewhere else.
+    const pulled = pulledAt();
+    for (const name of series) {
+      if (Date.now() - (pulled[name] || 0) > 6 * 3600 * 1000) await pullTracking(name);
+    }
     for (const name of series) {
       const p = seriesProgress(name);
       const key = `${p.volumes}|${p.completed}|${p.stars}`;
@@ -3011,6 +3418,25 @@ function checkTracking() {
 }
 
 loadTracking().then(renderTrackerAccounts);
+
+/// Read AO3's rating and fandoms from books added before 2.1, a batch at a
+/// time in the background, then show them.
+(async function scanMeta() {
+  await new Promise((r) => setTimeout(r, 4000));
+  let total = 0;
+  for (;;) {
+    let n = 0;
+    try {
+      n = await invoke("scan_book_meta");
+    } catch {
+      break;
+    }
+    if (!n) break;
+    total += n;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (total) refreshLibrary();
+})();
 
 // -------------------------------------------------------- book servers
 
@@ -3461,25 +3887,44 @@ $("#lib-shelves").addEventListener("click", async () => {
     /* none */
   }
   const pinned = new Set(pinnedShelves());
+  const hidden = new Set(hiddenTags());
+  $("#hide-explicit").checked = pref("hideExplicit", "") === "1";
   const list = $("#shelves-list");
   list.textContent = "";
   if (!tags.length) list.innerHTML = "<p class='muted'>No tags yet. Add some under a book's Edit details first.</p>";
   for (const [tag, count] of tags) {
-    const l = document.createElement("label");
-    l.className = "check";
-    const c = document.createElement("input");
-    c.type = "checkbox";
-    c.checked = pinned.has(tag);
-    c.addEventListener("change", () => {
-      const now = pinnedShelves().filter((t) => t !== tag);
-      if (c.checked) now.push(tag);
-      setPref("shelves", JSON.stringify(now));
-      if (!c.checked && state.shelf === tag) state.shelf = null;
-      renderShelfTabs();
-      renderShelf();
-    });
-    l.append(c, ` ${tag} (${count})`);
-    list.appendChild(l);
+    const row = document.createElement("div");
+    row.className = "shelf-row";
+    const name = document.createElement("span");
+    name.textContent = `${tag} (${count})`;
+    const mk = (label, checked, onChange) => {
+      const l = document.createElement("label");
+      l.className = "check small";
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = checked;
+      c.addEventListener("change", () => onChange(c.checked));
+      l.append(c, ` ${label}`);
+      return l;
+    };
+    row.append(
+      name,
+      mk("Tab", pinned.has(tag), (on) => {
+        const now = pinnedShelves().filter((t) => t !== tag);
+        if (on) now.push(tag);
+        setPref("shelves", JSON.stringify(now));
+        if (!on && state.shelf === tag) state.shelf = null;
+        renderShelfTabs();
+        renderShelf();
+      }),
+      mk("Hide", hidden.has(tag), (on) => {
+        const now = hiddenTags().filter((t) => t !== tag);
+        if (on) now.push(tag);
+        setPref("hiddenTags", JSON.stringify(now));
+        renderShelf();
+      }),
+    );
+    list.appendChild(row);
   }
   $("#shelves-dialog").showModal();
 });
@@ -3493,7 +3938,7 @@ function renderContinue(visibleCount) {
   const plain = !state.filter && !state.shelf && state.libView === "all" && !selection.on;
   const books = plain
     ? state.books
-        .filter((b) => readStatus(b) === "reading" && b.last_opened_at && !b.missing && b.format !== "audio")
+        .filter((b) => readStatus(b) === "reading" && b.last_opened_at && !b.missing && b.format !== "audio" && !isHidden(b))
         .sort((a, b) => (b.last_opened_at || 0) - (a.last_opened_at || 0))
         .slice(0, 12)
     : [];
@@ -5220,7 +5665,204 @@ $("#reader-more").addEventListener("click", () => {
   $("#reader-side").textContent = side.book ? "📖  Close the second book" : "📖  A second book beside this one";
   $("#reader-tts").textContent = tts.on ? "🔊  Stop reading aloud" : "🔊  Read aloud";
   $("#reader-tts").hidden = state.reader?.kind !== "epub";
+  $("#reader-ocr").hidden = state.reader?.kind !== "cbz";
 });
+
+// ------------------------------------------------------- OCR translator
+//
+// Drag a box around a speech bubble on a comic page: the text in it is read
+// on this device by Tesseract (WebAssembly, with English and Japanese built
+// in) and can be sent to Google Translate.
+
+const ocr = { worker: null, lang: "", canvas: null, busy: false };
+
+function ocrLang() {
+  return pref("ocrLang", "eng");
+}
+
+async function ocrWorker(lang) {
+  if (ocr.worker && ocr.lang === lang) return ocr.worker;
+  if (ocr.worker) {
+    await ocr.worker.terminate().catch(() => {});
+    ocr.worker = null;
+  }
+  const T = await import("tesseract.js");
+  const base = new URL("ocr/", location.href).href;
+  ocr.worker = await T.createWorker(lang, 1, {
+    workerPath: `${base}worker.min.js`,
+    corePath: `${base}core`,
+    langPath: `${base}lang`,
+    workerBlobURL: false,
+    gzip: true,
+    cacheMethod: "none",
+  });
+  // Vertical Japanese is read as one block of vertical text.
+  await ocr.worker.setParameters({ tessedit_pageseg_mode: lang === "jpn_vert" ? "5" : "6", preserve_interword_spaces: lang.startsWith("jpn") ? "1" : "0" });
+  ocr.lang = lang;
+  return ocr.worker;
+}
+
+/// The part of a page image under a box on screen, as a canvas, allowing
+/// for zoom, letterboxing (object-fit) and cropped borders.
+function pageRegion(img, box) {
+  const r = img.getBoundingClientRect();
+  const nw = img.naturalWidth;
+  const nh = img.naturalHeight;
+  let [t, rt, b, l] = [0, 0, 0, 0];
+  const m = /inset\(([\d.]+)%\s+([\d.]+)%\s+([\d.]+)%\s+([\d.]+)%\)/.exec(img.style.objectViewBox || "");
+  if (m) [t, rt, b, l] = m.slice(1).map((x) => Number(x) / 100);
+  const vx = l * nw;
+  const vy = t * nh;
+  const vw = nw * (1 - l - rt);
+  const vh = nh * (1 - t - b);
+  const scale = Math.min(r.width / vw, r.height / vh);
+  const ox = r.left + (r.width - vw * scale) / 2;
+  const oy = r.top + (r.height - vh * scale) / 2;
+  const sx = Math.max(0, vx + (box.left - ox) / scale);
+  const sy = Math.max(0, vy + (box.top - oy) / scale);
+  const sw = Math.min(nw - sx, box.width / scale);
+  const sh = Math.min(nh - sy, box.height / scale);
+  if (sw < 4 || sh < 4) return null;
+  // Small lettering reads better a little larger.
+  const up = Math.max(1, Math.min(3, 900 / Math.max(sw, sh)));
+  const c = document.createElement("canvas");
+  c.width = Math.round(sw * up);
+  c.height = Math.round(sh * up);
+  const g = c.getContext("2d");
+  g.imageSmoothingQuality = "high";
+  g.filter = "grayscale(1) contrast(1.25)";
+  g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+
+function startOcr() {
+  if (state.reader?.kind !== "cbz") return;
+  const overlay = $("#ocr-overlay");
+  overlay.hidden = false;
+  $("#ocr-box").hidden = true;
+}
+
+{
+  const overlay = $("#ocr-overlay");
+  const boxEl = $("#ocr-box");
+  let start = null;
+  overlay.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    e.preventDefault();
+    overlay.setPointerCapture(e.pointerId);
+    start = { x: e.clientX, y: e.clientY };
+    boxEl.hidden = false;
+    Object.assign(boxEl.style, { left: "0px", top: "0px", width: "0px", height: "0px" });
+  });
+  overlay.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const o = overlay.getBoundingClientRect();
+    const left = Math.min(start.x, e.clientX);
+    const top = Math.min(start.y, e.clientY);
+    Object.assign(boxEl.style, {
+      left: `${left - o.left}px`,
+      top: `${top - o.top}px`,
+      width: `${Math.abs(e.clientX - start.x)}px`,
+      height: `${Math.abs(e.clientY - start.y)}px`,
+    });
+  });
+  overlay.addEventListener("pointerup", (e) => {
+    if (!start) return;
+    const box = {
+      left: Math.min(start.x, e.clientX),
+      top: Math.min(start.y, e.clientY),
+      width: Math.abs(e.clientX - start.x),
+      height: Math.abs(e.clientY - start.y),
+    };
+    start = null;
+    if (box.width < 12 || box.height < 12) return;
+    // The page under the middle of the box.
+    overlay.hidden = true;
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    const img = hit?.tagName === "IMG" ? hit : hit?.querySelector?.("img");
+    if (!img || !img.naturalWidth) {
+      overlay.hidden = false;
+      boxEl.hidden = true;
+      toast("Drag the box over the page itself.", true);
+      return;
+    }
+    const canvas = pageRegion(img, box);
+    if (!canvas) {
+      overlay.hidden = false;
+      return;
+    }
+    ocr.canvas = canvas;
+    runOcr();
+  });
+  $("#ocr-cancel").addEventListener("click", () => {
+    overlay.hidden = true;
+    start = null;
+  });
+}
+
+function syncOcrLang() {
+  const lang = ocrLang();
+  document.querySelectorAll("#ocr-lang button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.lang === lang);
+    b.setAttribute("aria-checked", String(b.dataset.lang === lang));
+  });
+}
+
+async function runOcr() {
+  if (!ocr.canvas || ocr.busy) return;
+  syncOcrLang();
+  $("#ocr-text").value = "";
+  $("#ocr-status").textContent = ocr.worker && ocr.lang === ocrLang() ? "Reading…" : "Starting the reader (first time takes a few seconds)…";
+  if (!$("#ocr-sheet").open) $("#ocr-sheet").showModal();
+  ocr.busy = true;
+  try {
+    const w = await ocrWorker(ocrLang());
+    $("#ocr-status").textContent = "Reading…";
+    const { data } = await w.recognize(ocr.canvas);
+    let text = (data.text || "").trim();
+    if (ocrLang().startsWith("jpn")) text = text.replace(/[ \t]+/g, "");
+    else text = text.replace(/-\n(?=[a-z])/g, "").replace(/\s*\n\s*/g, " ");
+    $("#ocr-text").value = text;
+    $("#ocr-status").textContent = text ? `Confidence ${Math.round(data.confidence || 0)}%. Fix any mistakes before translating.` : "No text found there. Try a tighter box, or another language above.";
+  } catch (e) {
+    logError("OCR", e);
+    $("#ocr-status").textContent = `Could not read it: ${e?.message || e}`;
+  } finally {
+    ocr.busy = false;
+  }
+}
+
+document.querySelectorAll("#ocr-lang button").forEach((b) =>
+  b.addEventListener("click", () => {
+    setPref("ocrLang", b.dataset.lang);
+    runOcr();
+  }),
+);
+$("#reader-ocr").addEventListener("click", () => {
+  $("#more-sheet").close();
+  startOcr();
+});
+$("#ocr-translate").addEventListener("click", () => {
+  const text = $("#ocr-text").value.trim();
+  if (!text) return;
+  const to = (navigator.language || "en").split("-")[0];
+  const from = ocrLang().startsWith("jpn") ? "ja" : "auto";
+  const url = `https://translate.google.com/?sl=${from}&tl=${encodeURIComponent(to)}&op=translate&text=${encodeURIComponent(text.slice(0, 1500))}`;
+  invoke("open_link", { url }).catch((e) => toast(String(e), true));
+});
+$("#ocr-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("#ocr-text").value);
+    toast("Copied.");
+  } catch {
+    $("#ocr-text").select();
+  }
+});
+$("#ocr-again").addEventListener("click", () => {
+  $("#ocr-sheet").close();
+  startOcr();
+});
+$("#ocr-done").addEventListener("click", () => $("#ocr-sheet").close());
 
 // ----------------------------------------------------------------- comics
 //
@@ -5255,6 +5897,58 @@ async function comicMode(book, pages) {
     return sizes.filter((r) => r > 2.2).length >= Math.min(2, sizes.length) ? "strip" : "pages";
   } catch {
     return "pages";
+  }
+}
+
+/// The colour along a page's edges (median of the border pixels), for the
+/// background behind it. Cached per image.
+const edgeCache = new Map();
+async function edgeColor(src) {
+  const key = `${src.length}:${src.slice(-64)}`;
+  if (edgeCache.has(key)) return edgeCache.get(key);
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const W = 48;
+  const H = Math.max(2, Math.round((W * img.naturalHeight) / Math.max(1, img.naturalWidth)));
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(img, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data;
+  const rs = [], gs = [], bs = [];
+  const take = (x, y) => {
+    const k = (y * W + x) * 4;
+    rs.push(d[k]);
+    gs.push(d[k + 1]);
+    bs.push(d[k + 2]);
+  };
+  for (let x = 0; x < W; x++) {
+    take(x, 0);
+    take(x, H - 1);
+  }
+  for (let y = 0; y < H; y++) {
+    take(0, y);
+    take(W - 1, y);
+  }
+  const med = (a) => a.sort((m, n) => m - n)[a.length >> 1];
+  const color = `rgb(${med(rs)}, ${med(gs)}, ${med(bs)})`;
+  if (edgeCache.size > 200) edgeCache.clear();
+  edgeCache.set(key, color);
+  return color;
+}
+
+/// Paint `el`'s background to match the page shown (when turned on).
+async function paintPageBg(el, src) {
+  if (pref("pageBg", "1") !== "1" || !src) {
+    el.style.background = "";
+    return;
+  }
+  try {
+    el.style.background = await edgeColor(src);
+  } catch {
+    el.style.background = "";
   }
 }
 
@@ -5330,6 +6024,7 @@ async function openStrip(book, pages) {
     }
     if (lo !== current) {
       current = lo;
+      paintPageBg(strip, loaded.get(current)?.src);
       $("#reader-progress").textContent = label();
       showPageNumber(current + 1, pages.length, label());
       tidy();
@@ -5387,8 +6082,10 @@ async function openStrip(book, pages) {
     goTo,
     setDirection: () => {},
     relayout: () => {},
+    repaintBg: () => paintPageBg(strip, loaded.get(current)?.src),
     cleanup: () => {
       alive = false;
+      strip.style.background = "";
       near.disconnect();
       clearTimeout(saveTimer);
       strip.removeEventListener("scroll", onScroll);
@@ -5518,6 +6215,7 @@ async function openCbz(book, pages, rtlHint) {
     resetZoom();
     zoomLayer.classList.toggle("two", order.length === 2);
     imgA.src = order[0];
+    paintPageBg(view, order[0]);
     imgB.hidden = order.length < 2;
     imgB.src = order[1] || "";
     applyCrop(imgA);
@@ -5732,8 +6430,10 @@ async function openCbz(book, pages, rtlHint) {
       wasTwo = twoUp();
       render();
     },
+    repaintBg: () => paintPageBg(view, imgA.src),
     cleanup: () => {
       generation++;
+      view.style.background = "";
       observer.disconnect();
       clearTimeout(resizeTimer);
       clearTimeout(tapTimer);
@@ -5762,6 +6462,11 @@ function syncComicSheet() {
     b.setAttribute("aria-checked", String(b.dataset.mode === mode));
   });
   const layout = pref("comicLayout", "auto");
+  $("#comic-pagebg").checked = pref("pageBg", "1") === "1";
+  document.querySelectorAll("#comic-layout button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.layout === layout),
+  );
+}
   document.querySelectorAll("#comic-mode button").forEach((b) =>
   b.addEventListener("click", async () => {
     const r = state.reader;
@@ -5778,10 +6483,6 @@ function syncComicSheet() {
     await openBook(id);
   }),
 );
-document.querySelectorAll("#comic-layout button").forEach((b) =>
-    b.classList.toggle("active", b.dataset.layout === layout),
-  );
-}
 $("#reader-comic").addEventListener("click", () => {
   syncComicSheet();
   $("#comic-sheet").showModal();
@@ -5801,6 +6502,10 @@ document.querySelectorAll("#comic-layout button").forEach((b) =>
   }),
 );
 $("#comic-done").addEventListener("click", () => $("#comic-sheet").close());
+$("#comic-pagebg").addEventListener("change", (e) => {
+  setPref("pageBg", e.target.checked ? "1" : "0");
+  state.reader?.repaintBg?.();
+});
 
 // ------------------------------------------------------------ AO3 search
 

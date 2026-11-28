@@ -45,6 +45,10 @@ pub struct Book {
     pub rating: Option<u8>,
     /// "unread", "reading" or "finished"; none means not set by hand.
     pub status: Option<String>,
+    /// AO3's rating ("Explicit", "Mature"…), for AO3 works.
+    pub ao3_rating: Option<String>,
+    /// AO3's fandoms, for AO3 works.
+    pub fandoms: Vec<String>,
 }
 
 /// A highlight in a book, with an optional note. `cfi` is the EPUB location
@@ -113,6 +117,11 @@ fn add_columns(conn: &Connection) -> Result<()> {
         ("rating", "INTEGER"),
         ("status", "TEXT"),
         ("marks_at", "INTEGER"),
+        // From AO3's preface page: the work's rating and fandoms (one per
+        // line), and whether the book has been looked at for them.
+        ("ao3_rating", "TEXT"),
+        ("fandoms", "TEXT"),
+        ("meta_scanned", "INTEGER"),
     ])?;
     add_columns_to(conn, "annotations", &[("uid", "TEXT"), ("updated_at", "INTEGER")])?;
     conn.execute_batch(
@@ -606,7 +615,8 @@ pub fn upsert_book(conn: &Connection, b: &NewBook<'_>) -> Result<i64> {
 const BOOK_COLUMNS: &str = "id, path, format, title, author, cover IS NOT NULL,
      added_at, last_opened_at, position, ao3_work_id, chapters_seen,
      chapters_total, complete, last_checked_at, has_update,
-     series, series_index, folder, edited, drm, tags, rating, status";
+     series, series_index, folder, edited, drm, tags, rating, status,
+     ao3_rating, fandoms";
 
 fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     let path: String = r.get(1)?;
@@ -636,7 +646,27 @@ fn row_to_book(r: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         tags: split_tags(r.get::<_, Option<String>>(20)?.as_deref()),
         rating: r.get::<_, Option<i64>>(21)?.and_then(|n| u8::try_from(n).ok()).filter(|n| (1..=5).contains(n)),
         status: r.get(22)?,
+        ao3_rating: r.get(23)?,
+        fandoms: split_tags(r.get::<_, Option<String>>(24)?.as_deref()),
     })
+}
+
+/// Books not yet looked at for AO3's rating and fandoms.
+pub fn meta_unscanned(conn: &Connection, limit: usize) -> Result<Vec<(i64, String)>> {
+    let mut st = conn.prepare(
+        "SELECT id, path FROM books WHERE meta_scanned IS NULL AND format = 'epub' AND drm IS NULL LIMIT ?1",
+    )?;
+    let rows = st.query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn set_meta(conn: &Connection, id: i64, rating: Option<&str>, fandoms: &[String]) -> Result<()> {
+    let f = fandoms.join("\n");
+    conn.execute(
+        "UPDATE books SET ao3_rating = ?2, fandoms = ?3, meta_scanned = 1 WHERE id = ?1",
+        params![id, rating, if f.is_empty() { None } else { Some(f) }],
+    )?;
+    Ok(())
 }
 
 /// Tags are kept one per line.

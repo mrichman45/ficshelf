@@ -19,6 +19,7 @@ mod opds;
 mod trackers;
 mod epubfix;
 mod lookup_word;
+mod ao3meta;
 mod mobi;
 mod creds;
 mod db;
@@ -215,7 +216,34 @@ fn import_one(conn: &rusqlite::Connection, path: &Path, folder: Option<&str>) ->
         drm,
     };
     let id = db::upsert_book(conn, &new)?;
+    if format == "epub" && drm.is_none() {
+        let m = ao3meta::from_epub(path);
+        db::set_meta(conn, id, m.rating.as_deref(), &m.fandoms).ok();
+    }
     db::get_book(conn, id)?.ok_or_else(|| anyhow::anyhow!("the book vanished after import"))
+}
+
+/// Read AO3's rating and fandoms from books added before FicShelf looked
+/// for them, a batch at a time. Returns how many were looked at (0 = done).
+#[tauri::command]
+async fn scan_book_meta(state: State<'_, AppState>) -> Result<usize, String> {
+    let todo = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::meta_unscanned(&conn, 60).map_err(chain)?
+    };
+    if todo.is_empty() {
+        return Ok(0);
+    }
+    let found: Vec<(i64, ao3meta::Meta)> = tauri::async_runtime::spawn_blocking(move || {
+        todo.into_iter().map(|(id, path)| (id, ao3meta::from_epub(Path::new(&path)))).collect()
+    })
+    .await
+    .map_err(err)?;
+    let conn = state.conn.lock().map_err(err)?;
+    for (id, m) in &found {
+        db::set_meta(&conn, *id, m.rating.as_deref(), &m.fandoms).ok();
+    }
+    Ok(found.len())
 }
 
 fn data_url(bytes: &[u8], mime: &str) -> String {
@@ -1360,6 +1388,42 @@ async fn tracker_push(
     Ok(done)
 }
 
+/// Her progress on a series as the services have it, the furthest of the
+/// linked ones (for two-way sync: volumes read in another app).
+#[tauri::command]
+async fn tracker_pull(state: State<'_, AppState>, series: String) -> Result<Option<trackers::Entry>, String> {
+    let links: Vec<db::TrackerLink> = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::tracker_links(&conn).map_err(chain)?.into_iter().filter(|l| l.series == series).collect()
+    };
+    let mut best: Option<trackers::Entry> = None;
+    for l in links {
+        let Ok(token) = tracker_token(&state, &l.service).await else { continue };
+        match trackers::pull(&l.service, &token, l.media_id).await {
+            Ok(e) if e.listed => {
+                if best.as_ref().map_or(true, |b| e.volumes > b.volumes || (e.completed && !b.completed)) {
+                    best = Some(e);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => return Err(format!("{}: {e}", l.service)),
+        }
+    }
+    Ok(best)
+}
+
+/// "More like this" for a linked series.
+#[tauri::command]
+async fn tracker_recommendations(state: State<'_, AppState>, series: String) -> Result<Vec<trackers::Suggestion>, String> {
+    let link = {
+        let conn = state.conn.lock().map_err(err)?;
+        db::tracker_links(&conn).map_err(chain)?.into_iter().find(|l| l.series == series)
+    }
+    .ok_or("link this series on AniList or MyAnimeList first (its Track button)")?;
+    let token = tracker_token(&state, &link.service).await.unwrap_or_default();
+    trackers::recommendations(&link.service, &token, link.media_id).await.map_err(chain)
+}
+
 // ---------------------------------------------------- history and stats
 
 #[tauri::command]
@@ -1871,6 +1935,26 @@ fn save_export(state: State<'_, AppState>, name: String, content: String) -> Res
     let tmp = dir.join(format!(".{stem}.md.part"));
     std::fs::write(&tmp, content.as_bytes()).map_err(err)?;
     util::place_file(&tmp, &path).map_err(err)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Save a book's cover as a picture in the Covers folder beside the
+/// downloads, and return its path.
+#[tauri::command]
+fn save_cover(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    let conn = state.conn.lock().map_err(err)?;
+    let book = db::get_book(&conn, id).map_err(chain)?.ok_or("that book is not in the library")?;
+    let (bytes, mime) = db::cover_bytes(&conn, id).map_err(chain)?.ok_or("this book has no cover")?;
+    let ext = match mime.as_str() {
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "jpg",
+    };
+    let dir = state.library_dir.lock().map_err(err)?.join("Covers");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let path = dir.join(format!("{}.{ext}", util::safe_filename(&book.title, "Cover")));
+    std::fs::write(&path, bytes).map_err(err)?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -3002,6 +3086,8 @@ pub fn run() {
             tracker_link,
             tracker_unlink,
             tracker_push,
+            tracker_pull,
+            tracker_recommendations,
             opds_add,
             opds_remove,
             opds_browse,
@@ -3059,12 +3145,14 @@ pub fn run() {
             tts_say,
             tts_stop,
             define,
+            scan_book_meta,
             save_export,
             list_fonts,
             add_font,
             font_data,
             remove_font,
             reveal_file,
+            save_cover,
             sync_now,
             sync_open_page,
             sync_sign_out,

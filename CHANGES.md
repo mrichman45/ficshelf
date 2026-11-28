@@ -2,6 +2,19 @@
 
 Each release's section here is shown at the top of its page on GitHub.
 
+## 2.1.0
+
+Ideas from Komikku.
+
+- **Hide books**: in Library ⋯ → Shelves and hiding, mark tags as **Hide** and/or hide works AO3 rates Explicit. They stay out of the Library and Continue reading until you turn on Library ⋯ → Show hidden books, which switches itself off again when FicShelf restarts.
+- **Group the library** (Series tab → the new menu next to the sort): by series as before, or by author, fandom, tag, status, AO3 rating or folder. FicShelf now reads each AO3 work's rating and fandoms (books already in the library are looked at in the background), and you can search them: `fandom:"good omens"`, `rated:explicit`.
+- **Your order**: Library ⋯ → Arrange books…, then drag books where you want them. The new sort "Your order" keeps it; books added later appear first.
+- **Page-colour background** for comics: the space around a page takes the colour of its edges instead of black or white bars (Comic settings, on by default).
+- **Cover colours and viewer**: the book menu and a series' header take their colour from the cover; **View cover** shows it large, to save or share.
+- **Two-way AniList / MyAnimeList sync**: volumes you read in another app are brought in (the first ones in the series are marked finished); nothing is ever marked unread.
+- **More like this**: recommendations from AniList or MyAnimeList for a tracked series (series header, or the Track dialog).
+- **OCR translator** for comics (⋮ → Read and translate text on the page): drag a box round a speech bubble, and its text is read on your device (English, Japanese, or vertical Japanese), ready to correct, copy or translate.
+
 ## 2.0.0
 
 FicShelf 2.0: everything from the 1.x releases together, finished.

@@ -10,3 +10,6 @@ src-tauri/gen/
 *.keystore
 keystore.properties
 src-tauri/tests-pure/target/
+
+# Copied in at build time by scripts/copy-ocr.mjs
+public/ocr/

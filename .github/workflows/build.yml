@@ -80,6 +80,8 @@ jobs:
           node-version: 22
 
       - run: npm install
+      # Vertical Japanese for the OCR translator, if the package is there.
+      - run: npm install --no-save @tesseract.js-data/jpn_vert || echo "no jpn_vert"
 
       # Every icon size for every platform comes from icons/icon.png, so
       # replacing that one file changes the icon everywhere.
@@ -104,7 +106,7 @@ jobs:
       - name: App tests
         if: matrix.label == 'Linux'
         working-directory: src-tauri
-        run: cargo test --release --lib -- epubfix opds trackers lookup_word
+        run: cargo test --release --lib -- epubfix opds trackers lookup_word ao3meta
 
       - name: Gather Windows files
         if: matrix.label == 'Windows'
@@ -167,6 +169,8 @@ jobs:
           node-version: 22
 
       - run: npm install
+      # Vertical Japanese for the OCR translator, if the package is there.
+      - run: npm install --no-save @tesseract.js-data/jpn_vert || echo "no jpn_vert"
 
       - name: Build
         env:

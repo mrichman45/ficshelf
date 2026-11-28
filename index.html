@@ -55,6 +55,16 @@
             <option value="recent">Recently read</option>
             <option value="title">Title</option>
             <option value="author">Author</option>
+            <option value="custom">Your order</option>
+          </select>
+          <select id="group-by" title="Group by" hidden>
+            <option value="series">By series</option>
+            <option value="author">By author</option>
+            <option value="fandom">By fandom</option>
+            <option value="tag">By tag</option>
+            <option value="status">By status</option>
+            <option value="rating">By AO3 rating</option>
+            <option value="folder">By folder</option>
           </select>
           <button id="sort-dir" title="Reverse the order" aria-label="Reverse the order"></button>
           <button id="lib-layout" title="Grid or list" aria-label="Grid or list"></button>
@@ -71,6 +81,11 @@
           <h2 id="series-name"></h2>
           <button id="btn-series-rename">Rename series</button>
           <button id="btn-series-track">Track</button>
+          <button id="btn-series-more" hidden>More like this</button>
+        </div>
+        <div id="arrange-bar" class="arrange-bar" hidden>
+          <span>Drag books into the order you want.</span>
+          <button id="arrange-done" class="primary">Done</button>
         </div>
         <div id="shelf" class="shelf"></div>
         <p id="library-empty" class="empty" hidden>
@@ -157,6 +172,11 @@
               <button id="side-close" class="icon" title="Close this book" aria-label="Close this book">✕</button>
             </div>
             <div id="side-area"></div>
+          </div>
+          <!-- OCR: drag a box around a speech bubble. -->
+          <div id="ocr-overlay" hidden>
+            <p class="ocr-hint">Drag a box around the text to read. <button id="ocr-cancel">Cancel</button></p>
+            <div id="ocr-box" hidden></div>
           </div>
           <!-- Reading ruler: a clear band over the line being read. -->
           <div id="reader-ruler" hidden><span class="ruler-grip" title="Drag to move the ruler" aria-label="Drag to move the ruler">⇕</span></div>
@@ -677,6 +697,7 @@
       <p id="book-menu-title" class="sheet-title"></p>
       <button id="book-menu-edit">Edit details</button>
       <button id="book-menu-finished">Mark as finished</button>
+      <button id="book-menu-cover">View cover</button>
       <button id="book-menu-online">Find details online</button>
       <button id="book-menu-convert" hidden>Convert</button>
       <button id="book-menu-select">Select more books</button>
@@ -687,7 +708,9 @@
     <dialog id="lib-menu" class="sheet">
       <p class="sheet-title">Library</p>
       <button id="lib-select">Select books…</button>
-      <button id="lib-shelves">Shelves…</button>
+      <button id="lib-shelves">Shelves and hiding…</button>
+      <button id="lib-show-hidden">Show hidden books: off</button>
+      <button id="lib-arrange">Arrange books…</button>
       <button id="lib-incognito">Incognito mode: off</button>
       <button id="lib-duplicates">Find duplicates</button>
       <button id="btn-check-folders" hidden>Check folders for new books</button>
@@ -697,8 +720,9 @@
     </dialog>
 
     <dialog id="shelves-dialog" class="sheet tall">
-      <h3>Shelves</h3>
-      <p class="muted small">Pick tags to show as tabs in the Library, next to All books and Series. Tag books under Edit details (or several at once with Select books).</p>
+      <h3>Shelves and hiding</h3>
+      <p class="muted small"><strong>Tab</strong> shows a tag as a tab in the Library, next to All books and Series. <strong>Hide</strong> keeps books with that tag out of the Library until you turn on Library ⋯ → Show hidden books (which turns itself off again when FicShelf restarts). Tag books under Edit details, or several at once with Select books.</p>
+      <label class="check"><input id="hide-explicit" type="checkbox" /> Hide works AO3 rates Explicit</label>
       <div id="shelves-list" class="shelves-list"></div>
       <div class="row"><button id="shelves-done" class="primary">Done</button></div>
     </dialog>
@@ -713,6 +737,7 @@
         <li><code>status:unread</code> · <code>status:reading</code> · <code>status:finished</code></li>
         <li><code>format:epub</code> · <code>format:manga</code> · <code>format:podfic</code></li>
         <li><code>folder:manga</code> · <code>ao3:yes</code> · <code>missing:yes</code> · <code>new:yes</code></li>
+        <li><code>fandom:"good omens"</code> · <code>rated:explicit</code> · <code>-rated:explicit</code> (AO3 works)</li>
         <li><code>tag:angst -status:finished</code> (unfinished angst)</li>
       </ul>
       <div class="row"><button id="search-help-close" class="primary">Done</button></div>
@@ -919,6 +944,7 @@
       <button id="reader-comic">⚙  Reading direction and pages</button>
       <button id="reader-tts">🔊  Read aloud</button>
       <button id="reader-side">📖  A second book beside this one</button>
+      <button id="reader-ocr" hidden>🔤  Read and translate text on the page</button>
       <button id="reader-reflow" hidden>📄  Text view: words wrap to fit the screen</button>
       <button id="reader-display">☀  Brightness, colour and auto-scroll</button>
       <button id="more-settings">Appearance and page turns…</button>
@@ -942,6 +968,41 @@
         <button id="lookup-wikt">Wiktionary</button>
         <button id="lookup-done" class="primary">Done</button>
       </div>
+    </dialog>
+
+    <dialog id="cover-viewer" class="cover-viewer">
+      <img id="cover-big" alt="" />
+      <p id="cover-title" class="cover-title"></p>
+      <div class="row">
+        <button id="cover-save">Save</button>
+        <button id="cover-share">Share</button>
+        <button id="cover-close" class="primary">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="recs-sheet" class="sheet tall">
+      <h3>More like <span id="recs-series"></span></h3>
+      <p id="recs-status" class="muted small"></p>
+      <div id="recs-list" class="opds-entries"></div>
+      <div class="row"><button id="recs-done" class="primary">Done</button></div>
+    </dialog>
+
+    <dialog id="ocr-sheet" class="sheet">
+      <h3>Text on the page</h3>
+      <div class="tabs" role="radiogroup" id="ocr-lang">
+        <button data-lang="eng" role="radio">English</button>
+        <button data-lang="jpn" role="radio">Japanese</button>
+        <button data-lang="jpn_vert" role="radio">Japanese (vertical)</button>
+      </div>
+      <p id="ocr-status" class="muted small"></p>
+      <textarea id="ocr-text" rows="5" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="ocr-translate" class="primary">Translate</button>
+        <button id="ocr-copy">Copy</button>
+        <button id="ocr-again">Another</button>
+        <button id="ocr-done">Done</button>
+      </div>
+      <p class="muted small">Read on this device (Tesseract). Translate opens Google Translate with the text.</p>
     </dialog>
 
     <dialog id="side-picker" class="sheet">
@@ -1004,6 +1065,7 @@
         Auto shows two pages side by side when the screen is wider than it is
         tall. Pinch or double-tap the middle of a page to zoom.
       </p>
+      <label class="check"><input id="comic-pagebg" type="checkbox" /> Background matches each page's edges</label>
       <div class="row"><button id="comic-done" class="primary">Done</button></div>
     </dialog>
 
